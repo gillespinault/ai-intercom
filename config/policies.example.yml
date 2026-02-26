@@ -1,0 +1,14 @@
+# AI-Intercom approval policies
+
+defaults:
+  require_approval: once
+  human_can_bypass: true
+
+rules: []
+# Example rules:
+#   - from: "*"
+#     to: "*"
+#     type: ask
+#     message_pattern: "check|status|list|verify"
+#     approval: never
+#     label: "Read-only queries"

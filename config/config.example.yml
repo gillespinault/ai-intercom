@@ -1,0 +1,51 @@
+# AI-Intercom configuration
+# Copy to ~/.config/ai-intercom/config.yml and adjust values
+
+mode: standalone  # hub, daemon, or standalone (hub+daemon)
+
+machine:
+  id: "my-machine"
+  display_name: "My Machine"
+  description: "Description of this machine"
+
+# Telegram settings (hub/standalone only)
+telegram:
+  bot_token: ""           # Set via TELEGRAM_BOT_TOKEN env var
+  supergroup_id: 0        # Set via TELEGRAM_SUPERGROUP_ID env var
+  security:
+    allowed_users: []     # Set via TELEGRAM_OWNER_ID env var
+    restrict_to_supergroup: true
+    ignore_private_messages: true
+
+# Network settings
+hub:
+  url: ""                 # Daemon: URL of the hub
+  listen: "0.0.0.0:7700" # Hub: listen address
+
+# Auth
+auth:
+  token: ""               # Set via INTERCOM_TOKEN env var
+
+# Project discovery
+discovery:
+  enabled: true
+  scan_paths: []
+  detect_by:
+    - file: "CLAUDE.md"
+    - file: ".git"
+    - file: "AGENTS.md"
+  exclude:
+    - "node_modules"
+    - ".venv"
+    - "backup"
+    - "__pycache__"
+
+# Agent launcher
+agent_launcher:
+  default_command: "claude"
+  default_args: ["-p", "--output-format", "json"]
+  allowed_paths: []
+  max_mission_duration: 1800
+
+# Manual project list (overrides discovery if non-empty)
+projects: []
