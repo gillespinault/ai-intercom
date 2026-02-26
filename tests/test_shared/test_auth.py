@@ -1,5 +1,4 @@
 import time
-import pytest
 from src.shared.auth import sign_request, verify_request
 
 

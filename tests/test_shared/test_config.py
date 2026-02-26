@@ -1,4 +1,3 @@
-import pytest
 from src.shared.config import IntercomConfig, load_config
 
 
