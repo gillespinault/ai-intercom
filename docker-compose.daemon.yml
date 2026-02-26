@@ -1,0 +1,13 @@
+services:
+  ai-intercom:
+    build: .
+    container_name: ai-intercom-daemon
+    restart: unless-stopped
+    command: ["daemon", "--config", "/app/config/config.yml"]
+    environment:
+      - HUB_URL=${HUB_URL}
+      - INTERCOM_TOKEN=${INTERCOM_TOKEN}
+    volumes:
+      - ./config/config.yml:/app/config/config.yml:ro
+    ports:
+      - "7700:7700"

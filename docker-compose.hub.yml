@@ -1,0 +1,20 @@
+services:
+  ai-intercom:
+    build: .
+    container_name: ai-intercom-hub
+    restart: unless-stopped
+    command: ["standalone", "--config", "/app/config/config.yml"]
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_SUPERGROUP_ID=${TELEGRAM_SUPERGROUP_ID}
+      - TELEGRAM_OWNER_ID=${TELEGRAM_OWNER_ID}
+      - INTERCOM_TOKEN=${INTERCOM_TOKEN}
+    volumes:
+      - ./config/config.yml:/app/config/config.yml:ro
+      - ./config/policies.yml:/app/config/policies.yml:ro
+      - intercom-data:/app/data
+    ports:
+      - "7700:7700"
+
+volumes:
+  intercom-data:
