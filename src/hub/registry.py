@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from datetime import datetime, timezone
 
 import aiosqlite
@@ -43,8 +44,15 @@ class Registry:
         self._db_path = db_path
         self._db: aiosqlite.Connection | None = None
 
+    def _ensure_db(self) -> aiosqlite.Connection:
+        """Return the database connection or raise if not initialized."""
+        if self._db is None:
+            raise RuntimeError("Registry not initialized. Call init() first.")
+        return self._db
+
     async def init(self) -> None:
         """Open database and create tables."""
+        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(self._db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA journal_mode=WAL")
@@ -68,8 +76,8 @@ class Registry:
         token: str,
     ) -> None:
         """Register or update a machine (upsert)."""
-        assert self._db is not None
-        await self._db.execute(
+        db = self._ensure_db()
+        await db.execute(
             """
             INSERT INTO machines (id, display_name, tailscale_ip, daemon_url, token, status, created_at)
             VALUES (?, ?, ?, ?, ?, 'unknown', datetime('now'))
@@ -81,12 +89,12 @@ class Registry:
             """,
             (machine_id, display_name, tailscale_ip, daemon_url, token),
         )
-        await self._db.commit()
+        await db.commit()
 
     async def get_machine(self, machine_id: str) -> dict | None:
         """Get a machine by ID. Returns dict or None."""
-        assert self._db is not None
-        async with self._db.execute(
+        db = self._ensure_db()
+        async with db.execute(
             "SELECT * FROM machines WHERE id = ?", (machine_id,)
         ) as cursor:
             row = await cursor.fetchone()
@@ -96,8 +104,8 @@ class Registry:
 
     async def get_machine_token(self, machine_id: str) -> str | None:
         """Get the token for a machine. Returns token string or None."""
-        assert self._db is not None
-        async with self._db.execute(
+        db = self._ensure_db()
+        async with db.execute(
             "SELECT token FROM machines WHERE id = ?", (machine_id,)
         ) as cursor:
             row = await cursor.fetchone()
@@ -115,9 +123,9 @@ class Registry:
         agent_command: str = "claude",
     ) -> None:
         """Register or update a project on a machine (upsert)."""
-        assert self._db is not None
+        db = self._ensure_db()
         caps_json = json.dumps(capabilities)
-        await self._db.execute(
+        await db.execute(
             """
             INSERT INTO projects (machine_id, project_id, description, capabilities, path, agent_command)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -129,19 +137,19 @@ class Registry:
             """,
             (machine_id, project_id, description, caps_json, path, agent_command),
         )
-        await self._db.commit()
+        await db.commit()
 
     async def update_heartbeat(
         self, machine_id: str, active_agents: list[str] | None = None
     ) -> None:
         """Update machine heartbeat: set last_seen to now and status to online."""
-        assert self._db is not None
+        db = self._ensure_db()
         now = datetime.now(timezone.utc).isoformat()
-        await self._db.execute(
+        await db.execute(
             "UPDATE machines SET last_seen = ?, status = 'online' WHERE id = ?",
             (now, machine_id),
         )
-        await self._db.commit()
+        await db.commit()
 
     async def list_agents(
         self,
@@ -152,7 +160,7 @@ class Registry:
 
         Optionally filter by machine status or machine id.
         """
-        assert self._db is not None
+        db = self._ensure_db()
         query = """
             SELECT
                 p.machine_id,
@@ -184,7 +192,7 @@ class Registry:
 
         query += " ORDER BY p.machine_id, p.project_id"
 
-        async with self._db.execute(query, params) as cursor:
+        async with db.execute(query, params) as cursor:
             rows = await cursor.fetchall()
             results = []
             for row in rows:
@@ -196,8 +204,8 @@ class Registry:
 
     async def list_machines(self) -> list[dict]:
         """List all registered machines."""
-        assert self._db is not None
-        async with self._db.execute(
+        db = self._ensure_db()
+        async with db.execute(
             "SELECT * FROM machines ORDER BY id"
         ) as cursor:
             rows = await cursor.fetchall()
@@ -205,18 +213,18 @@ class Registry:
 
     async def revoke_machine(self, machine_id: str) -> None:
         """Revoke a machine: set status to 'revoked' and clear token."""
-        assert self._db is not None
-        await self._db.execute(
+        db = self._ensure_db()
+        await db.execute(
             "UPDATE machines SET status = 'revoked', token = '' WHERE id = ?",
             (machine_id,),
         )
-        await self._db.commit()
+        await db.commit()
 
     async def update_project(
         self, machine_id: str, project_id: str, **kwargs: str
     ) -> None:
         """Update specific fields of a project."""
-        assert self._db is not None
+        db = self._ensure_db()
         if not kwargs:
             return
         allowed = {"description", "capabilities", "tags", "path", "agent_command"}
@@ -230,18 +238,18 @@ class Registry:
             set_clauses.append(f"{key} = ?")
             params.append(value)
         params.extend([machine_id, project_id])
-        await self._db.execute(
+        await db.execute(
             f"UPDATE projects SET {', '.join(set_clauses)} "
             f"WHERE machine_id = ? AND project_id = ?",
             params,
         )
-        await self._db.commit()
+        await db.commit()
 
     async def remove_project(self, machine_id: str, project_id: str) -> None:
         """Remove a project from the registry."""
-        assert self._db is not None
-        await self._db.execute(
+        db = self._ensure_db()
+        await db.execute(
             "DELETE FROM projects WHERE machine_id = ? AND project_id = ?",
             (machine_id, project_id),
         )
-        await self._db.commit()
+        await db.commit()

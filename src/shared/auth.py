@@ -7,6 +7,15 @@ import time
 MAX_TIMESTAMP_DRIFT = 60  # seconds
 
 
+def normalize_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Normalize header keys to title-case for verify_request.
+
+    Starlette lowercases all header keys (e.g. 'x-intercom-timestamp'),
+    but verify_request expects 'X-Intercom-Timestamp'.
+    """
+    return {key.title(): value for key, value in headers.items()}
+
+
 def sign_request(body: bytes, machine_id: str, token: str) -> dict[str, str]:
     timestamp = str(int(time.time()))
     signing_input = body + timestamp.encode()

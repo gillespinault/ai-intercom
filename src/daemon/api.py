@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 
 from fastapi import FastAPI, Request, Response
 
-from src.shared.auth import verify_request
+from src.shared.auth import normalize_headers, verify_request
 
-
-def _normalize_headers(headers: dict[str, str]) -> dict[str, str]:
-    """Normalize header keys to the title-case format expected by verify_request.
-
-    Starlette lowercases all header keys (e.g. 'x-intercom-timestamp'),
-    but verify_request expects 'X-Intercom-Timestamp'.
-    """
-    return {key.title(): value for key, value in headers.items()}
+logger = logging.getLogger(__name__)
 
 
 def create_app(machine_id: str, token: str) -> FastAPI:
@@ -24,6 +19,7 @@ def create_app(machine_id: str, token: str) -> FastAPI:
     app.state.machine_id = machine_id
     app.state.token = token
     app.state.active_missions: dict[str, dict] = {}
+    app.state.launcher = None  # Set by daemon main
 
     @app.get("/health")
     async def health():
@@ -51,14 +47,31 @@ def create_app(machine_id: str, token: str) -> FastAPI:
     @app.post("/api/message")
     async def receive_message(request: Request):
         body = await request.body()
-        headers = _normalize_headers(dict(request.headers))
+        headers = normalize_headers(dict(request.headers))
         if not verify_request(body, headers, token):
             return Response(status_code=401, content="Unauthorized")
 
         data = json.loads(body)
-        # Store mission reference; actual agent launch is handled by agent_launcher
         mission_id = data.get("mission_id", "unknown")
+        msg_type = data.get("type", "send")
         app.state.active_missions[mission_id] = data
+
+        # Launch agent for actionable message types
+        if msg_type in ("ask", "start_agent") and app.state.launcher:
+            to_agent = data.get("to_agent", "")
+            project = to_agent.split("/", 1)[1] if "/" in to_agent else to_agent
+            mission = data.get("payload", {}).get("mission", "")
+            message = data.get("payload", {}).get("message", mission)
+            try:
+                result = await app.state.launcher.launch(
+                    project_id=project,
+                    mission=message,
+                    mission_id=mission_id,
+                )
+                return {"status": "launched", "mission_id": mission_id, **result}
+            except Exception as e:
+                logger.error("Failed to launch agent: %s", e)
+                return {"status": "launch_failed", "mission_id": mission_id, "error": str(e)}
 
         return {"status": "received", "mission_id": mission_id}
 
