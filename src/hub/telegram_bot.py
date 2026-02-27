@@ -150,12 +150,20 @@ class TelegramBot:
             self._mission_topics[msg.mission_id] = topic_id
 
         text = format_agent_message(msg.from_agent, msg.payload.get("message", ""))
-        await bot.send_message(
-            chat_id=self.supergroup_id,
-            message_thread_id=topic_id,
-            text=text,
-            parse_mode="Markdown",
-        )
+        try:
+            await bot.send_message(
+                chat_id=self.supergroup_id,
+                message_thread_id=topic_id,
+                text=text,
+                parse_mode="Markdown",
+            )
+        except Exception:
+            # Fallback to plain text if Markdown parsing fails
+            await bot.send_message(
+                chat_id=self.supergroup_id,
+                message_thread_id=topic_id,
+                text=text,
+            )
         return topic_id
 
     async def request_approval(self, msg: Message, timeout: int = 300) -> str | None:
@@ -178,12 +186,19 @@ class TelegramBot:
         future: asyncio.Future = loop.create_future()
         self._pending_approvals[msg.id] = future
 
-        await bot.send_message(
-            chat_id=self.supergroup_id,
-            text=text,
-            reply_markup=keyboard,
-            parse_mode="Markdown",
-        )
+        try:
+            await bot.send_message(
+                chat_id=self.supergroup_id,
+                text=text,
+                reply_markup=keyboard,
+                parse_mode="Markdown",
+            )
+        except Exception:
+            await bot.send_message(
+                chat_id=self.supergroup_id,
+                text=text,
+                reply_markup=keyboard,
+            )
 
         try:
             result = await asyncio.wait_for(future, timeout=timeout)
