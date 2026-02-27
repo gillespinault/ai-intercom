@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
     parser = argparse.ArgumentParser(description="AI-Intercom")
     sub = parser.add_subparsers(dest="command")
 
