@@ -112,19 +112,26 @@ async def run_hub(config: IntercomConfig) -> None:
         if len(parts) == 3 and parts[0] == "join":
             _, machine_id, action = parts
             if action == "approve":
-                # Call the approve endpoint internally
-                import httpx
-                async with httpx.AsyncClient() as client:
-                    resp = await client.post(f"http://localhost:7700/api/join/approve/{machine_id}")
-                    if resp.status_code == 200:
-                        await update.callback_query.edit_message_text(
-                            f"\u2705 Machine `{machine_id}` approved and registered.",
-                            parse_mode="Markdown",
-                        )
-                    else:
-                        await update.callback_query.edit_message_text(
-                            f"Error approving {machine_id}: {resp.text}"
-                        )
+                # Call approve logic directly (no HTTP round-trip)
+                import secrets as _secrets
+                pending = hub_api.state.pending_joins.pop(machine_id, None)
+                if pending:
+                    token = f"ict_{machine_id}_{_secrets.token_hex(16)}"
+                    await registry.register_machine(
+                        machine_id=machine_id,
+                        display_name=pending.get("display_name", machine_id),
+                        tailscale_ip=pending.get("ip", ""),
+                        daemon_url=f"http://{pending.get('ip', 'unknown')}:7700",
+                        token=token,
+                    )
+                    await update.callback_query.edit_message_text(
+                        f"\u2705 Machine `{machine_id}` approved and registered.",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await update.callback_query.edit_message_text(
+                        f"No pending join for {machine_id}"
+                    )
             else:
                 hub_api.state.pending_joins.pop(machine_id, None)
                 await update.callback_query.edit_message_text(
@@ -201,9 +208,14 @@ async def run_hub(config: IntercomConfig) -> None:
     # Run everything
     import uvicorn
 
+    listen = config.hub.get("listen", "0.0.0.0:7700")
+    host, _, port_str = listen.rpartition(":")
+    hub_host = host or "0.0.0.0"
+    hub_port = int(port_str) if port_str else 7700
+
     api_task = asyncio.create_task(
         uvicorn.Server(
-            uvicorn.Config(hub_api, host="0.0.0.0", port=7700, log_level="info")
+            uvicorn.Config(hub_api, host=hub_host, port=hub_port, log_level="info")
         ).serve()
     )
 
