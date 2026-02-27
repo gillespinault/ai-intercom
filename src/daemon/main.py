@@ -56,8 +56,9 @@ async def run_daemon(config: IntercomConfig) -> None:
         await _register_with_hub(hub_url, config, token)
         asyncio.create_task(_heartbeat_loop(hub_url, config.machine_id, token))
 
+    daemon_port = config.hub.get("daemon_port", 7700)
     server = uvicorn.Server(
-        uvicorn.Config(app, host="0.0.0.0", port=7700, log_level="info")
+        uvicorn.Config(app, host="0.0.0.0", port=daemon_port, log_level="info")
     )
     await server.serve()
 
@@ -128,10 +129,16 @@ async def _register_with_hub(hub_url: str, config: IntercomConfig, token: str) -
             logger.info("Auto-discovered %d projects: %s",
                         len(projects), [p["id"] for p in projects])
 
+    daemon_port = config.hub.get("daemon_port", 7700)
+    daemon_url = ""
+    if tailscale_ip:
+        daemon_url = f"http://{tailscale_ip}:{daemon_port}"
+
     body = json.dumps({
         "machine_id": config.machine_id,
         "display_name": config.machine.get("display_name", config.machine_id),
         "tailscale_ip": tailscale_ip,
+        "daemon_url": daemon_url,
         "projects": projects,
     }).encode()
 

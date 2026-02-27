@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 
+from src.daemon.agent_launcher import AgentLauncher
 from src.hub.approval import ApprovalEngine, ApprovalLevel
 from src.hub.registry import Registry
 from src.hub.router import Router
@@ -164,9 +165,38 @@ async def run_hub(config: IntercomConfig) -> None:
         request_approval=bot.request_approval,
     )
 
+    # Agent launcher for standalone mode (hub also acts as daemon)
+    launcher = None
+    project_paths: dict[str, str] = {}
+    if config.is_daemon:
+        launcher_cfg = config.agent_launcher
+        launcher = AgentLauncher(
+            default_command=launcher_cfg.get("default_command", "claude"),
+            default_args=launcher_cfg.get("default_args", ["-p"]),
+            allowed_paths=launcher_cfg.get("allowed_paths", []),
+            max_duration=launcher_cfg.get("max_mission_duration", 1800),
+        )
+
+        # Build project_paths from config or auto-discovery
+        projects = config.projects
+        if not projects:
+            scan_paths = config.discovery.get("scan_paths", [])
+            if scan_paths:
+                from src.daemon.main import _discover_projects
+                projects = _discover_projects(scan_paths)
+                logger.info(
+                    "Auto-discovered %d projects: %s",
+                    len(projects), [p["id"] for p in projects],
+                )
+        project_paths = {p["id"]: p.get("path", ".") for p in projects}
+        logger.info("Standalone launcher ready, project_paths: %s", project_paths)
+
     # Hub HTTP API
     from src.hub.hub_api import create_hub_api
-    hub_api = create_hub_api(registry, router, config, telegram_bot=bot)
+    hub_api = create_hub_api(
+        registry, router, config,
+        telegram_bot=bot, launcher=launcher, project_paths=project_paths,
+    )
 
     # Run everything
     import uvicorn

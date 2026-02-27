@@ -1,0 +1,24 @@
+[Unit]
+Description=AI-Intercom Daemon (serverlab)
+After=network-online.target docker.service
+Wants=network-online.target
+# Wait for hub container to be ready
+After=docker.service
+
+[Service]
+Type=simple
+User=gilles
+Group=gilles
+WorkingDirectory=/home/gilles
+Environment=PATH=/home/gilles/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/gilles/.local/share/ai-intercom-daemon/venv/bin/ai-intercom daemon --config /home/gilles/.config/ai-intercom/config.yml
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ai-intercom-daemon
+
+[Install]
+WantedBy=multi-user.target

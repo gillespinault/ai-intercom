@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import uuid
 from typing import Any
@@ -14,18 +15,24 @@ from src.shared.auth import normalize_headers, verify_request
 from src.shared.config import IntercomConfig
 from src.shared.models import Message
 
+logger = logging.getLogger(__name__)
+
 
 def create_hub_api(
     registry: Registry,
     router: Any,
     config: IntercomConfig,
     telegram_bot: Any = None,
+    launcher: Any = None,
+    project_paths: dict[str, str] | None = None,
 ) -> FastAPI:
     """Create the Hub FastAPI application."""
     app = FastAPI(title="AI-Intercom Hub")
     app.state.registry = registry
     app.state.router = router
     app.state.telegram_bot = telegram_bot
+    app.state.launcher = launcher
+    app.state.project_paths = project_paths or {}
     app.state.pending_joins: dict[str, dict] = {}
     app.state.mission_store: dict[str, list[dict]] = {}
 
@@ -137,13 +144,16 @@ def create_hub_api(
         request_ip = request.client.host if request.client else ""
         ip = tailscale_ip or request_ip
 
+        # Use daemon_url from body if provided, otherwise construct from IP
+        daemon_url = data.get("daemon_url") or f"http://{ip}:7700"
+
         existing = await registry.get_machine(machine_id)
         if not existing:
             await registry.register_machine(
                 machine_id=machine_id,
                 display_name=display_name,
                 tailscale_ip=ip,
-                daemon_url=f"http://{ip}:7700",
+                daemon_url=daemon_url,
                 token="",
             )
         elif tailscale_ip:
@@ -152,7 +162,7 @@ def create_hub_api(
                 machine_id=machine_id,
                 display_name=display_name,
                 tailscale_ip=ip,
-                daemon_url=f"http://{ip}:7700",
+                daemon_url=daemon_url,
                 token=existing.get("token", ""),
             )
 
@@ -303,12 +313,51 @@ def create_hub_api(
 
         In standalone mode the hub also acts as a daemon, so it needs
         to accept /api/message for messages routed to itself.
+        For actionable message types (ask, start_agent), launches a
+        local agent via AgentLauncher if available.
         Note: mission history is already stored by /api/route, so we
         don't duplicate it here.
         """
         body = await request.body()
         data = json.loads(body)
         mission_id = data.get("mission_id", "unknown")
+        msg_type = data.get("type", "send")
+
+        # Launch agent for actionable message types
+        if msg_type in ("ask", "start_agent") and app.state.launcher:
+            to_agent = data.get("to_agent", "")
+            project = to_agent.split("/", 1)[1] if "/" in to_agent else to_agent
+            payload = data.get("payload", {})
+            mission = payload.get("mission") or payload.get("message", "")
+            agent_command = payload.get("agent_command")
+
+            project_path = app.state.project_paths.get(project, ".")
+            logger.info(
+                "Standalone launching agent for %s in %s (mission=%s)",
+                project, project_path, mission_id,
+            )
+
+            try:
+                result = await app.state.launcher.launch(
+                    mission=mission,
+                    context_messages=[],
+                    mission_id=mission_id,
+                    project_path=project_path,
+                    agent_command=agent_command,
+                )
+                return {
+                    "status": "launched",
+                    "mission_id": mission_id,
+                    "output": result,
+                }
+            except Exception as e:
+                logger.error("Failed to launch agent: %s", e)
+                return {
+                    "status": "launch_failed",
+                    "mission_id": mission_id,
+                    "error": str(e),
+                }
+
         return {"status": "received", "mission_id": mission_id}
 
     return app
