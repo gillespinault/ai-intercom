@@ -336,6 +336,9 @@ def create_hub_api(
             f"\U0001f680 _Agent lance sur_ `{target}`",
         )
 
+        consecutive_not_found = 0
+        max_not_found = 6  # Give up after ~60s of 404s
+
         while elapsed < poll_timeout:
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
@@ -354,7 +357,35 @@ def create_hub_api(
                     resp = await client.get(
                         f"{daemon_url}/api/missions/{mission_id}"
                     )
-                    status_data = resp.json()
+
+                    # Handle 404: mission not found on daemon
+                    if resp.status_code == 404:
+                        consecutive_not_found += 1
+                        if consecutive_not_found >= max_not_found:
+                            logger.warning(
+                                "Mission %s: %d consecutive 404s from %s, giving up",
+                                mission_id, consecutive_not_found, daemon_url,
+                            )
+                            await telegram_bot.post_text_to_mission(
+                                mission_id,
+                                f"\u26a0\ufe0f _Mission introuvable sur_ `{target}` "
+                                f"_(daemon ne connait pas cette mission)_",
+                            )
+                            return
+                        continue
+
+                    # Got a valid response, reset 404 counter
+                    consecutive_not_found = 0
+
+                    try:
+                        status_data = resp.json()
+                    except Exception:
+                        logger.warning(
+                            "Mission %s: invalid JSON from daemon (HTTP %d)",
+                            mission_id, resp.status_code,
+                        )
+                        continue
+
                     if status_data.get("status") in ("completed", "failed"):
                         total = _format_elapsed(int(time.monotonic() - t0))
                         status = status_data["status"]
@@ -395,8 +426,8 @@ def create_hub_api(
                             f"{header}\n\n{tg_output}" if tg_output else header,
                         )
                         return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Mission %s: poll error: %s", mission_id, e)
 
         # Timeout
         total = _format_elapsed(int(time.monotonic() - t0))
