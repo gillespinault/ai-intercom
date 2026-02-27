@@ -253,3 +253,14 @@ class Registry:
             (machine_id, project_id),
         )
         await db.commit()
+
+    async def remove_machine(self, machine_id: str) -> None:
+        """Remove a machine and all its projects from the registry."""
+        db = self._ensure_db()
+        await db.execute(
+            "DELETE FROM projects WHERE machine_id = ?", (machine_id,)
+        )
+        await db.execute(
+            "DELETE FROM machines WHERE id = ?", (machine_id,)
+        )
+        await db.commit()

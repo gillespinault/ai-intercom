@@ -52,7 +52,9 @@ def create_hub_api(
         data = await request.json()
         machine_id = data.get("machine_id", "")
         display_name = data.get("display_name", machine_id)
-        ip = request.client.host if request.client else "unknown"
+        tailscale_ip = data.get("tailscale_ip", "")
+        request_ip = request.client.host if request.client else "unknown"
+        ip = tailscale_ip or request_ip
 
         app.state.pending_joins[machine_id] = {
             "machine_id": machine_id,
@@ -129,9 +131,12 @@ def create_hub_api(
         if not await _verify_machine(request, body, machine_id):
             return Response(status_code=401, content="Unauthorized")
 
-        # Ensure machine exists before registering projects
+        # Prefer Tailscale IP from body (daemon-detected), fall back to request IP
         display_name = data.get("display_name", machine_id)
-        ip = request.client.host if request.client else ""
+        tailscale_ip = data.get("tailscale_ip", "")
+        request_ip = request.client.host if request.client else ""
+        ip = tailscale_ip or request_ip
+
         existing = await registry.get_machine(machine_id)
         if not existing:
             await registry.register_machine(
@@ -140,6 +145,15 @@ def create_hub_api(
                 tailscale_ip=ip,
                 daemon_url=f"http://{ip}:7700",
                 token="",
+            )
+        elif tailscale_ip:
+            # Update IP if daemon provided a Tailscale IP
+            await registry.register_machine(
+                machine_id=machine_id,
+                display_name=display_name,
+                tailscale_ip=ip,
+                daemon_url=f"http://{ip}:7700",
+                token=existing.get("token", ""),
             )
 
         for project in data.get("projects", []):
@@ -274,5 +288,11 @@ def create_hub_api(
     async def list_machines():
         machines = await registry.list_machines()
         return {"machines": machines}
+
+    @app.delete("/api/machines/{machine_id}")
+    async def delete_machine(machine_id: str):
+        """Remove a machine and all its projects from the registry."""
+        await registry.remove_machine(machine_id)
+        return {"status": "deleted", "machine_id": machine_id}
 
     return app

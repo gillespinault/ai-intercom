@@ -89,11 +89,18 @@ for peer in data.get('Peer', {}).values():
     fi
 fi
 
+# Detect Tailscale IP
+TAILSCALE_IP=""
+if command -v tailscale &> /dev/null; then
+    TAILSCALE_IP=$(tailscale ip -4 2>/dev/null | head -1 || true)
+    [ -n "$TAILSCALE_IP" ] && echo "Tailscale IP: $TAILSCALE_IP"
+fi
+
 # Request to join
 echo "Requesting to join hub at $HUB_URL..."
 RESPONSE=$(curl -sf -X POST "$HUB_URL/api/join" \
     -H "Content-Type: application/json" \
-    -d "{\"machine_id\": \"$MACHINE_ID\", \"display_name\": \"$MACHINE_ID\"}" 2>/dev/null || true)
+    -d "{\"machine_id\": \"$MACHINE_ID\", \"display_name\": \"$MACHINE_ID\", \"tailscale_ip\": \"$TAILSCALE_IP\"}" 2>/dev/null || true)
 
 if echo "$RESPONSE" | grep -q "pending_approval"; then
     echo "Join request sent. Waiting for approval via Telegram..."
