@@ -25,6 +25,7 @@ class IntercomConfig(BaseModel):
     auth: dict[str, Any] = Field(default_factory=dict)
     discovery: dict[str, Any] = Field(default_factory=dict)
     agent_launcher: dict[str, Any] = Field(default_factory=dict)
+    dispatcher: dict[str, Any] = Field(default_factory=dict)
     projects: list[dict[str, Any]] = Field(default_factory=list)
 
     @property

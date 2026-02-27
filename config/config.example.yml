@@ -47,5 +47,16 @@ agent_launcher:
   allowed_paths: []
   max_mission_duration: 1800
 
+# Intelligent dispatcher (routes natural language Telegram messages via claude -p)
+dispatcher:
+  enabled: false
+  target: "serverlab/serverlab"    # Agent that receives dispatched messages
+  system_prompt: |
+    Tu es le dispatcher Telegram AI-Intercom. Tu reponds de maniere concise.
+    Tu as acces aux outils MCP intercom pour communiquer avec les agents.
+    Utilise intercom_list_agents() pour decouvrir les agents disponibles.
+    Utilise intercom_start_agent() pour lancer des taches sur d'autres machines.
+    Formate tes reponses en Markdown compatible Telegram (pas de triple backtick).
+
 # Manual project list (overrides discovery if non-empty)
 projects: []

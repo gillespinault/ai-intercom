@@ -5,6 +5,12 @@ defaults:
   require_approval: once
 
 rules:
+  # Human dispatch from Telegram: auto-approve
+  - from: "human"
+    to: "*"
+    approval: never
+    label: "Human dispatch - no approval needed"
+
   # Local same-machine communications: auto-approve
   - from: "serverlab/*"
     to: "serverlab/*"

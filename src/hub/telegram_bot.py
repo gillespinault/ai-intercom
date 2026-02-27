@@ -100,12 +100,14 @@ class TelegramBot:
         on_human_message: Any = None,
         on_start_command: Any = None,
         on_approval_response: Any = None,
+        on_dispatch: Any = None,
     ):
         self.supergroup_id = supergroup_id
         self.allowed_users = allowed_users
         self.on_human_message = on_human_message
         self.on_start_command = on_start_command
         self.on_approval_response = on_approval_response
+        self.on_dispatch = on_dispatch
 
         self.app = Application.builder().token(bot_token).build()
         self._setup_handlers()
@@ -293,9 +295,10 @@ class TelegramBot:
     async def _handle_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Handle plain text messages in forum topics (human intervention)."""
+        """Handle plain text messages: topic messages or natural language dispatch."""
         if not self._is_authorized(update.effective_user.id):
             return
+
         if update.message and update.message.message_thread_id:
             # Message in a topic = human intervention in a mission
             if self.on_human_message:
@@ -304,3 +307,9 @@ class TelegramBot:
                     update,
                     context,
                 )
+            return
+
+        # Message in general chat or DM → intelligent dispatcher
+        if self.on_dispatch and update.message and update.message.text:
+            await update.message.chat.send_action("typing")
+            await self.on_dispatch(update.message.text, update, context)

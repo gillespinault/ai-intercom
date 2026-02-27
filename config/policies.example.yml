@@ -12,3 +12,8 @@ rules: []
 #     message_pattern: "check|status|list|verify"
 #     approval: never
 #     label: "Read-only queries"
+#
+#   - from: "human"
+#     to: "*"
+#     approval: never
+#     label: "Human dispatch - no approval needed"

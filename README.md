@@ -49,6 +49,7 @@ A distributed inter-agent communication system that enables AI coding agents (Cl
 - **Agent launcher** -- Start AI agents on remote machines with mission context and path restrictions
 - **Policy engine** -- Glob/regex-based approval rules with runtime grants (mission-level, session-level)
 - **SQLite registry** -- Persistent machine and project tracking with heartbeat monitoring
+- **Intelligent dispatcher** -- Send natural language messages in Telegram and Claude interprets and executes via MCP intercom tools
 - **Docker support** -- Separate Compose files for hub and daemon deployment
 
 ## Quick Start
@@ -163,6 +164,12 @@ agent_launcher:
   default_args: ["-p", "--output-format", "json"]
   allowed_paths: []        # Empty = allow all
   max_mission_duration: 1800
+
+dispatcher:                  # Hub/standalone only
+  enabled: false
+  target: "serverlab/serverlab"  # machine/project to dispatch to
+  system_prompt: |           # Prepended to every dispatched message
+    Tu es le dispatcher Telegram AI-Intercom.
 ```
 
 ### Environment Variable Overrides
@@ -198,6 +205,41 @@ rules:
 - `once` -- Requires Telegram approval for each message
 - `mission` -- Approve once, then auto-approved for the rest of that mission
 - `session` -- Approve once, then auto-approved for this agent pair until restart
+
+## Intelligent Dispatcher
+
+The dispatcher transforms the Telegram bot from a command-based router into a natural language interface. Instead of memorizing slash commands and machine/project names, you write plain messages and Claude handles the rest.
+
+**How it works:**
+
+1. You send a natural language message in the Telegram supergroup (outside any topic)
+2. The bot shows a "Reflexion en cours..." indicator with typing animation
+3. The message is dispatched to the configured target agent via `claude -p`
+4. The thinking message is replaced with the response
+
+**Example:**
+> "List all online agents" → Claude calls `intercom_list_agents()` and returns the result
+
+**Configuration (`config.yml`):**
+
+```yaml
+dispatcher:
+  enabled: true
+  target: "serverlab/serverlab"    # Agent that receives dispatched messages
+  system_prompt: |
+    Tu es le dispatcher Telegram AI-Intercom. Tu reponds de maniere concise.
+    Utilise les outils MCP intercom pour communiquer avec les agents.
+```
+
+The dispatcher bypasses the router (no forum topic creation, no approval) and calls the target daemon directly. Add a policy rule for auto-approval of human messages:
+
+```yaml
+rules:
+  - from: "human"
+    to: "*"
+    approval: never
+    label: "Human dispatch - no approval needed"
+```
 
 ## Security Model
 

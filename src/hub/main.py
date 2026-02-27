@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import uuid
 from pathlib import Path
 
 import httpx
@@ -19,11 +21,10 @@ logger = logging.getLogger(__name__)
 
 
 async def send_to_daemon(daemon_url: str, message: dict, token: str) -> dict:
-    import json
     body = json.dumps(message).encode()
     headers = sign_request(body, "hub", token)
     headers["Content-Type"] = "application/json"
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(f"{daemon_url}/api/message", content=body, headers=headers)
         return resp.json()
 
@@ -91,7 +92,6 @@ async def run_hub(config: IntercomConfig) -> None:
             await update.message.reply_text(f"Error: {e}")
             return
 
-        import uuid
         msg = Message(
             id=str(uuid.uuid4()),
             from_agent="human",
@@ -152,6 +152,99 @@ async def run_hub(config: IntercomConfig) -> None:
             await update.callback_query.edit_message_text(f"Approved ({level_str}).")
             bot.resolve_approval(msg_id, level_str)
 
+    # Dispatcher callback: routes natural language messages via claude -p
+    async def on_dispatch(text: str, update, context) -> None:
+        """Handle natural language messages by dispatching directly to a daemon."""
+        if not config.dispatcher.get("enabled"):
+            await update.message.reply_text(
+                "Dispatcher not enabled. Use /start_agent or /agents."
+            )
+            return
+
+        target = config.dispatcher.get("target", f"{config.machine_id}/home")
+        machine_id = target.split("/")[0] if "/" in target else target
+        system_prompt = config.dispatcher.get("system_prompt", "")
+
+        mission = f"{system_prompt}\n\nUser message:\n{text}" if system_prompt else text
+
+        # Look up target machine directly (skip router to avoid forum topic)
+        machine = await registry.get_machine(machine_id)
+        if not machine:
+            await update.message.reply_text(f"Machine `{machine_id}` inconnue.")
+            return
+        if machine["status"] != "online":
+            await update.message.reply_text(
+                f"Machine `{machine_id}` est {machine['status']}."
+            )
+            return
+
+        # Send a thinking message that will be edited with the response
+        thinking_msg = await update.message.reply_text(
+            "\u2728 _Reflexion en cours..._", parse_mode="Markdown"
+        )
+
+        # Keep typing indicator alive while waiting
+        typing_active = True
+
+        async def keep_typing():
+            while typing_active:
+                try:
+                    await update.message.chat.send_action("typing")
+                except Exception:
+                    pass
+                await asyncio.sleep(4)
+
+        typing_task = asyncio.create_task(keep_typing())
+
+        msg = Message(
+            id=str(uuid.uuid4()),
+            from_agent="human",
+            to_agent=target,
+            type="start_agent",
+            payload={"mission": mission},
+            mission_id=str(uuid.uuid4()),
+        )
+
+        try:
+            result = await send_to_daemon(
+                machine["daemon_url"], msg.model_dump(), machine.get("token", "")
+            )
+        except Exception as e:
+            logger.exception("Dispatch failed")
+            typing_active = False
+            typing_task.cancel()
+            await thinking_msg.edit_text(f"Dispatch error: {e}")
+            return
+        finally:
+            typing_active = False
+            typing_task.cancel()
+
+        # Extract output from response
+        output = result.get("output", "")
+        if not output:
+            output = result.get("error", "Pas de reponse")
+
+        # Parse JSON if claude used --output-format json
+        try:
+            parsed = json.loads(output)
+            output = parsed.get("result", output)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Truncate if too long for Telegram (4096 chars max)
+        if len(output) > 4000:
+            output = output[:4000] + "\n\n... (tronque)"
+
+        try:
+            await thinking_msg.edit_text(output, parse_mode="Markdown")
+        except Exception:
+            # Fallback to plain text if Markdown fails
+            try:
+                await thinking_msg.edit_text(output)
+            except Exception as e:
+                logger.warning("Failed to edit thinking message: %s", e)
+                await update.message.reply_text(output)
+
     # Telegram bot
     tg_config = config.telegram
     bot = TelegramBot(
@@ -161,6 +254,7 @@ async def run_hub(config: IntercomConfig) -> None:
         on_human_message=on_human_message,
         on_start_command=on_start_command,
         on_approval_response=on_approval_response,
+        on_dispatch=on_dispatch,
     )
 
     # Router
