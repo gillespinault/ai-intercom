@@ -9,7 +9,6 @@ def tools():
         hub_client=AsyncMock(),
         machine_id="serverlab",
         current_project="infra",
-        poll_interval=0.1,  # fast polling for tests
     )
 
 
@@ -28,32 +27,27 @@ async def test_send_message(tools):
     assert result["status"] == "sent"
 
 
-async def test_ask_polls_until_completed(tools):
-    """ask() should route then poll daemon-status until completed."""
+async def test_ask_returns_immediately_with_mission_id(tools):
+    """ask() returns the route result immediately (no polling)."""
     tools.hub_client.ask.return_value = {
         "status": "launched",
-        "mission_id": "m-poll-1",
-    }
-    tools.hub_client.get_daemon_mission_status.return_value = {
-        "mission_id": "m-poll-1",
-        "status": "completed",
-        "output": "All done",
+        "mission_id": "m-launch-1",
     }
     result = await tools.ask(to="vps/nginx", message="do something", timeout=60)
-    assert result["status"] == "completed"
-    assert result["output"] == "All done"
-    tools.hub_client.get_daemon_mission_status.assert_called()
+    assert result["status"] == "launched"
+    assert result["mission_id"] == "m-launch-1"
+    # No polling should happen
+    tools.hub_client.get_daemon_mission_status.assert_not_called()
 
 
-async def test_ask_returns_immediately_on_error(tools):
-    """ask() should not poll if route returns an error."""
+async def test_ask_propagates_error(tools):
+    """ask() should propagate error statuses from route."""
     tools.hub_client.ask.return_value = {
         "status": "denied",
         "mission_id": "m-denied",
     }
     result = await tools.ask(to="vps/nginx", message="do something")
     assert result["status"] == "denied"
-    tools.hub_client.get_daemon_mission_status.assert_not_called()
 
 
 async def test_register_update(tools):

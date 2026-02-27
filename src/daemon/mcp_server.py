@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -8,17 +7,14 @@ from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL = 5  # seconds between status polls
-
 
 class IntercomTools:
     """Business logic for intercom MCP tools, decoupled from transport."""
 
-    def __init__(self, hub_client: Any, machine_id: str, current_project: str, poll_interval: float = POLL_INTERVAL):
+    def __init__(self, hub_client: Any, machine_id: str, current_project: str):
         self.hub_client = hub_client
         self.machine_id = machine_id
         self.current_project = current_project
-        self.poll_interval = poll_interval
 
     @property
     def from_agent(self) -> str:
@@ -43,8 +39,10 @@ class IntercomTools:
         timeout: int = 300,
         require_approval: str = "auto",
     ) -> dict:
-        """Send message, launch remote agent, then poll for completion."""
-        # Step 1: Route the message (this triggers launch_background on daemon)
+        """Send message and launch remote agent. Returns immediately with mission_id.
+
+        Use intercom_status(mission_id) to check for completion and get the output.
+        """
         route_result = await self.hub_client.ask(
             from_agent=self.from_agent,
             to=to,
@@ -52,35 +50,7 @@ class IntercomTools:
             timeout=timeout,
             require_approval=require_approval,
         )
-
-        mission_id = route_result.get("mission_id")
-        if not mission_id:
-            return route_result
-
-        # If route already returned an error, don't poll
-        if route_result.get("status") in ("error", "denied", "launch_failed"):
-            return route_result
-
-        # Step 2: Poll daemon-status until completed/failed or timeout
-        elapsed = 0
-        while elapsed < timeout:
-            await asyncio.sleep(self.poll_interval)
-            elapsed += self.poll_interval
-            try:
-                status = await self.hub_client.get_daemon_mission_status(mission_id)
-                mission_status = status.get("status", "unknown")
-                if mission_status in ("completed", "failed"):
-                    return status
-                if mission_status == "unreachable":
-                    logger.warning("Daemon unreachable for mission %s", mission_id)
-            except Exception as e:
-                logger.warning("Poll error for %s: %s", mission_id, e)
-
-        return {
-            "mission_id": mission_id,
-            "status": "timeout",
-            "output": f"No response after {timeout}s",
-        }
+        return route_result
 
     async def start_agent(
         self,
@@ -170,6 +140,9 @@ def create_mcp_server(tools: IntercomTools) -> FastMCP:
     ) -> dict:
         """Send a message and wait for a response from another agent.
 
+        Returns immediately with a mission_id. Use intercom_status(mission_id)
+        to poll for completion and retrieve the agent's output.
+
         Args:
             to: Target agent ID (machine/project). Use intercom_list_agents to discover.
             message: The message/mission to send.
@@ -205,6 +178,10 @@ def create_mcp_server(tools: IntercomTools) -> FastMCP:
     @mcp.tool()
     async def intercom_status(mission_id: str) -> dict:
         """Get the status of a running mission.
+
+        Returns mission status with output when completed. Poll this after
+        intercom_ask to get the agent's response. Status values: "running",
+        "completed", "failed", "launched".
 
         Args:
             mission_id: The mission ID to check.

@@ -54,9 +54,10 @@ async def run_daemon(config: IntercomConfig) -> None:
     hub_url = config.hub.get("url", "")
     if hub_url:
         await _register_with_hub(hub_url, config, token)
-        asyncio.create_task(_heartbeat_loop(hub_url, config.machine_id, token))
-
-    daemon_port = config.hub.get("daemon_port", 7700)
+        daemon_port = config.hub.get("daemon_port", 7700)
+        asyncio.create_task(_heartbeat_loop(hub_url, config.machine_id, token, daemon_port))
+    else:
+        daemon_port = config.hub.get("daemon_port", 7700)
     server = uvicorn.Server(
         uvicorn.Config(app, host="0.0.0.0", port=daemon_port, log_level="info")
     )
@@ -168,7 +169,7 @@ async def _register_with_hub(hub_url: str, config: IntercomConfig, token: str) -
         logger.warning("Failed to register with hub: %s", e)
 
 
-async def _heartbeat_loop(hub_url: str, machine_id: str, token: str) -> None:
+async def _heartbeat_loop(hub_url: str, machine_id: str, token: str, daemon_port: int = 7700) -> None:
     import httpx
     import json
     from src.shared.auth import sign_request
@@ -176,7 +177,13 @@ async def _heartbeat_loop(hub_url: str, machine_id: str, token: str) -> None:
     while True:
         await asyncio.sleep(30)
         try:
-            body = json.dumps({"machine_id": machine_id}).encode()
+            tailscale_ip = _detect_tailscale_ip()
+            daemon_url = f"http://{tailscale_ip}:{daemon_port}" if tailscale_ip else ""
+            body = json.dumps({
+                "machine_id": machine_id,
+                "tailscale_ip": tailscale_ip,
+                "daemon_url": daemon_url,
+            }).encode()
             headers = sign_request(body, machine_id, token)
             headers["Content-Type"] = "application/json"
             async with httpx.AsyncClient(timeout=5) as client:

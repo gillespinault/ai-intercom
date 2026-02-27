@@ -233,6 +233,22 @@ def create_hub_api(
         await registry.update_heartbeat(
             machine_id, active_agents=data.get("active_agents", [])
         )
+
+        # Update IP/daemon_url if provided (keeps registry in sync)
+        tailscale_ip = data.get("tailscale_ip", "")
+        daemon_url = data.get("daemon_url", "")
+        if tailscale_ip and daemon_url:
+            existing = await registry.get_machine(machine_id)
+            if existing and existing.get("tailscale_ip") != tailscale_ip:
+                logger.info("Machine %s IP changed: %s -> %s", machine_id, existing.get("tailscale_ip"), tailscale_ip)
+                await registry.register_machine(
+                    machine_id=machine_id,
+                    display_name=existing.get("display_name", machine_id),
+                    tailscale_ip=tailscale_ip,
+                    daemon_url=daemon_url,
+                    token=existing.get("token", ""),
+                )
+
         return {"status": "ok"}
 
     # --- Message routing ---
