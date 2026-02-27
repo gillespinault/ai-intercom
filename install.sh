@@ -126,6 +126,8 @@ else
     exit 1
 fi
 
+CLAUDE_PATH=$(which claude 2>/dev/null || echo "claude")
+
 cat > "$CONFIG_DIR/config.yml" <<YAML
 mode: daemon
 machine:
@@ -138,7 +140,73 @@ auth:
 discovery:
   enabled: true
   scan_paths: ["$HOME"]
+agent_launcher:
+  default_command: "$CLAUDE_PATH"
+  default_args: ["-p", "--output-format", "json"]
+  allowed_paths: ["$HOME"]
+  max_mission_duration: 1800
+projects: []
 YAML
 
 echo "Daemon config written to $CONFIG_DIR/config.yml"
-echo "Start with: ai-intercom daemon --config $CONFIG_DIR/config.yml"
+
+# --- Install systemd service ---
+VENV_BIN=$(dirname "$(which ai-intercom 2>/dev/null || echo "")")
+AI_INTERCOM_BIN="${VENV_BIN}/ai-intercom"
+
+if [ -x "$AI_INTERCOM_BIN" ] && command -v systemctl &> /dev/null; then
+    echo ""
+    echo "=== Setting up systemd service ==="
+    SERVICE_FILE="/etc/systemd/system/ai-intercom-daemon.service"
+    CURRENT_USER=$(whoami)
+
+    sudo tee "$SERVICE_FILE" > /dev/null <<SERVICE
+[Unit]
+Description=AI-Intercom Daemon ($MACHINE_ID)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$CURRENT_USER
+Group=$CURRENT_USER
+WorkingDirectory=$HOME
+Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=$AI_INTERCOM_BIN daemon --config $CONFIG_DIR/config.yml
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ai-intercom-daemon
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable ai-intercom-daemon.service
+    sudo systemctl start ai-intercom-daemon.service
+    echo "Daemon service installed and started."
+    echo "Check status: systemctl status ai-intercom-daemon"
+    echo "View logs:    journalctl -u ai-intercom-daemon -f"
+else
+    echo ""
+    echo "Start manually: ai-intercom daemon --config $CONFIG_DIR/config.yml"
+fi
+
+# --- MCP configuration for Claude Code ---
+echo ""
+echo "=== MCP Setup for Claude Code ==="
+MCP_CONFIG='{
+  "mcpServers": {
+    "ai-intercom": {
+      "command": "'$AI_INTERCOM_BIN'",
+      "args": ["mcp-server", "--config", "'$CONFIG_DIR'/config.yml"]
+    }
+  }
+}'
+
+echo "Add this to your project's .mcp.json to enable intercom tools:"
+echo "$MCP_CONFIG" | python3 -m json.tool 2>/dev/null || echo "$MCP_CONFIG"
+echo ""
+echo "=== Installation complete ==="
