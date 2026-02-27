@@ -7,6 +7,7 @@ machine:
   id: "my-machine"
   display_name: "My Machine"
   description: "Description of this machine"
+  # tailscale_ip: "100.x.x.x"  # Override auto-detection (needed for multi-tailnet setups)
 
 # Telegram settings (hub/standalone only)
 telegram:

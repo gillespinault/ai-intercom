@@ -1,0 +1,13 @@
+mode: daemon
+
+machine:
+  id: "serverlab"
+  display_name: "ServerLab"
+
+hub:
+  url: "http://localhost:7700"
+
+auth:
+  token: ""
+
+projects: []
