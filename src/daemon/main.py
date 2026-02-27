@@ -13,8 +13,15 @@ from src.shared.config import IntercomConfig
 logger = logging.getLogger(__name__)
 
 
-def _detect_tailscale_ip() -> str:
-    """Detect this machine's Tailscale IPv4 address."""
+def _detect_tailscale_ip(config_override: str = "") -> str:
+    """Detect this machine's Tailscale IPv4 address.
+
+    If config_override is set (from machine.tailscale_ip), use it instead
+    of auto-detection. This is needed when the host has multiple Tailscale
+    instances (e.g. host Tailscale on one tailnet + Docker Tailscale on another).
+    """
+    if config_override:
+        return config_override
     try:
         result = subprocess.run(
             ["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5
@@ -52,10 +59,11 @@ async def run_daemon(config: IntercomConfig) -> None:
 
     # Register with hub
     hub_url = config.hub.get("url", "")
+    ip_override = config.machine.get("tailscale_ip", "")
     if hub_url:
-        await _register_with_hub(hub_url, config, token)
+        await _register_with_hub(hub_url, config, token, ip_override)
         daemon_port = config.hub.get("daemon_port", 7700)
-        asyncio.create_task(_heartbeat_loop(hub_url, config.machine_id, token, daemon_port))
+        asyncio.create_task(_heartbeat_loop(hub_url, config.machine_id, token, daemon_port, ip_override))
     else:
         daemon_port = config.hub.get("daemon_port", 7700)
     server = uvicorn.Server(
@@ -126,13 +134,13 @@ def _discover_projects(scan_paths: list[str]) -> list[dict]:
     return projects
 
 
-async def _register_with_hub(hub_url: str, config: IntercomConfig, token: str) -> None:
+async def _register_with_hub(hub_url: str, config: IntercomConfig, token: str, ip_override: str = "") -> None:
     import httpx
     import json
     from src.shared.auth import sign_request
 
     # Detect Tailscale IP for accurate daemon_url
-    tailscale_ip = _detect_tailscale_ip()
+    tailscale_ip = _detect_tailscale_ip(ip_override)
     if tailscale_ip:
         logger.info("Detected Tailscale IP: %s", tailscale_ip)
 
@@ -169,7 +177,7 @@ async def _register_with_hub(hub_url: str, config: IntercomConfig, token: str) -
         logger.warning("Failed to register with hub: %s", e)
 
 
-async def _heartbeat_loop(hub_url: str, machine_id: str, token: str, daemon_port: int = 7700) -> None:
+async def _heartbeat_loop(hub_url: str, machine_id: str, token: str, daemon_port: int = 7700, ip_override: str = "") -> None:
     import httpx
     import json
     from src.shared.auth import sign_request
@@ -177,7 +185,7 @@ async def _heartbeat_loop(hub_url: str, machine_id: str, token: str, daemon_port
     while True:
         await asyncio.sleep(30)
         try:
-            tailscale_ip = _detect_tailscale_ip()
+            tailscale_ip = _detect_tailscale_ip(ip_override)
             daemon_url = f"http://{tailscale_ip}:{daemon_port}" if tailscale_ip else ""
             body = json.dumps({
                 "machine_id": machine_id,
