@@ -17,6 +17,25 @@ rules:
     approval: always_allow
     label: "Local serverlab communications"
 
+  # Cross-machine agent-to-agent: auto-approve ask and send
+  - from: "serverlab/*"
+    to: "*"
+    type: ask
+    approval: never
+    label: "Serverlab agents can ask any machine"
+
+  - from: "serverlab/*"
+    to: "*"
+    type: send
+    approval: never
+    label: "Serverlab agents can send to any machine"
+
+  - from: "serverlab/*"
+    to: "*"
+    type: start_agent
+    approval: never
+    label: "Serverlab agents can start agents anywhere"
+
   # Read-only queries: auto-approve
   - from: "*"
     to: "*"
@@ -25,9 +44,9 @@ rules:
     approval: never
     label: "Read-only status queries"
 
-  # Agent launches always require approval
+  # Other agent launches require approval
   - from: "*"
     to: "*"
     type: start_agent
     approval: once
-    label: "Agent launches require approval"
+    label: "Non-serverlab agent launches require approval"
