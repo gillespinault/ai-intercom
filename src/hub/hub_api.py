@@ -100,6 +100,19 @@ def create_hub_api(
         if not await _verify_machine(request, body, machine_id):
             return Response(status_code=401, content="Unauthorized")
 
+        # Ensure machine exists before registering projects
+        display_name = data.get("display_name", machine_id)
+        ip = request.client.host if request.client else ""
+        existing = await registry.get_machine(machine_id)
+        if not existing:
+            await registry.register_machine(
+                machine_id=machine_id,
+                display_name=display_name,
+                tailscale_ip=ip,
+                daemon_url=f"http://{ip}:7700",
+                token="",
+            )
+
         for project in data.get("projects", []):
             await registry.register_project(
                 machine_id=machine_id,
