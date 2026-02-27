@@ -19,11 +19,13 @@ def create_hub_api(
     registry: Registry,
     router: Any,
     config: IntercomConfig,
+    telegram_bot: Any = None,
 ) -> FastAPI:
     """Create the Hub FastAPI application."""
     app = FastAPI(title="AI-Intercom Hub")
     app.state.registry = registry
     app.state.router = router
+    app.state.telegram_bot = telegram_bot
     app.state.pending_joins: dict[str, dict] = {}
     app.state.mission_store: dict[str, list[dict]] = {}
 
@@ -50,14 +52,41 @@ def create_hub_api(
         data = await request.json()
         machine_id = data.get("machine_id", "")
         display_name = data.get("display_name", machine_id)
+        ip = request.client.host if request.client else "unknown"
 
         app.state.pending_joins[machine_id] = {
             "machine_id": machine_id,
             "display_name": display_name,
             "projects": data.get("projects", []),
-            "ip": request.client.host if request.client else "unknown",
+            "ip": ip,
             "status": "pending_approval",
         }
+
+        # Notify via Telegram with approve/deny buttons
+        if telegram_bot:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "\u2705 Approve", callback_data=f"join:{machine_id}:approve"
+                    ),
+                    InlineKeyboardButton(
+                        "\u274c Deny", callback_data=f"join:{machine_id}:deny"
+                    ),
+                ]
+            ])
+            await telegram_bot.app.bot.send_message(
+                chat_id=telegram_bot.supergroup_id,
+                text=(
+                    f"\U0001f6aa *Join Request*\n\n"
+                    f"*Machine:* `{machine_id}`\n"
+                    f"*Name:* {display_name}\n"
+                    f"*IP:* `{ip}`\n\n"
+                    f"Approve this machine to join the network?"
+                ),
+                reply_markup=keyboard,
+                parse_mode="Markdown",
+            )
 
         return {"status": "pending_approval", "machine_id": machine_id}
 

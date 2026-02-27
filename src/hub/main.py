@@ -104,9 +104,35 @@ async def run_hub(config: IntercomConfig) -> None:
         await update.message.reply_text(f"Agent start: {status}")
 
     async def on_approval_response(callback_data: str, update, context) -> None:
-        """Handle approval inline keyboard responses."""
-        # Format: approve:<msg_id>:<level>
+        """Handle approval and join inline keyboard responses."""
         parts = callback_data.split(":")
+
+        # Join approval: join:<machine_id>:approve|deny
+        if len(parts) == 3 and parts[0] == "join":
+            _, machine_id, action = parts
+            if action == "approve":
+                # Call the approve endpoint internally
+                import httpx
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(f"http://localhost:7700/api/join/approve/{machine_id}")
+                    if resp.status_code == 200:
+                        await update.callback_query.edit_message_text(
+                            f"\u2705 Machine `{machine_id}` approved and registered.",
+                            parse_mode="Markdown",
+                        )
+                    else:
+                        await update.callback_query.edit_message_text(
+                            f"Error approving {machine_id}: {resp.text}"
+                        )
+            else:
+                hub_api.state.pending_joins.pop(machine_id, None)
+                await update.callback_query.edit_message_text(
+                    f"\u274c Machine `{machine_id}` denied.",
+                    parse_mode="Markdown",
+                )
+            return
+
+        # Message approval: approve:<msg_id>:<level>
         if len(parts) != 3 or parts[0] != "approve":
             return
         _, msg_id, level_str = parts
@@ -140,7 +166,7 @@ async def run_hub(config: IntercomConfig) -> None:
 
     # Hub HTTP API
     from src.hub.hub_api import create_hub_api
-    hub_api = create_hub_api(registry, router, config)
+    hub_api = create_hub_api(registry, router, config, telegram_bot=bot)
 
     # Run everything
     import uvicorn
