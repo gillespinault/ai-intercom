@@ -295,4 +295,20 @@ def create_hub_api(
         await registry.remove_machine(machine_id)
         return {"status": "deleted", "machine_id": machine_id}
 
+    # --- Daemon-compatible endpoint (for standalone mode) ---
+
+    @app.post("/api/message")
+    async def receive_message(request: Request):
+        """Handle messages routed to this machine (standalone mode).
+
+        In standalone mode the hub also acts as a daemon, so it needs
+        to accept /api/message for messages routed to itself.
+        Note: mission history is already stored by /api/route, so we
+        don't duplicate it here.
+        """
+        body = await request.body()
+        data = json.loads(body)
+        mission_id = data.get("mission_id", "unknown")
+        return {"status": "received", "mission_id": mission_id}
+
     return app
