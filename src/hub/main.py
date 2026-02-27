@@ -37,14 +37,20 @@ async def run_hub(config: IntercomConfig) -> None:
     registry = Registry("data/registry.db")
     await registry.init()
 
-    # Load policies
+    # Load policies (check multiple locations)
     import yaml
-    policies_path = Path("~/.config/ai-intercom/policies.yml").expanduser()
-    if policies_path.exists():
-        with open(policies_path) as f:
-            policies = yaml.safe_load(f) or {}
+    policies = {"defaults": {"require_approval": "once"}, "rules": []}
+    for policies_path in [
+        Path("config/policies.yml"),  # Docker mount
+        Path("~/.config/ai-intercom/policies.yml").expanduser(),  # User config
+    ]:
+        if policies_path.exists():
+            with open(policies_path) as f:
+                policies = yaml.safe_load(f) or policies
+            logger.info("Loaded policies from %s (%d rules)", policies_path, len(policies.get("rules", [])))
+            break
     else:
-        policies = {"defaults": {"require_approval": "once"}, "rules": []}
+        logger.warning("No policies.yml found, using defaults (require_approval=once)")
 
     approval = ApprovalEngine(policies)
 
@@ -104,20 +110,13 @@ async def run_hub(config: IntercomConfig) -> None:
         if len(parts) != 3 or parts[0] != "approve":
             return
         _, msg_id, level_str = parts
-        level_map = {
-            "once": ApprovalLevel.ONCE,
-            "mission": ApprovalLevel.MISSION,
-            "always": ApprovalLevel.ALWAYS_ALLOW,
-            "deny": None,
-        }
-        level = level_map.get(level_str)
+
         if level_str == "deny":
             await update.callback_query.edit_message_text("Denied.")
+            bot.resolve_approval(msg_id, None)
         else:
             await update.callback_query.edit_message_text(f"Approved ({level_str}).")
-        # Store approval result for the router to pick up
-        if hasattr(approval, '_pending_approvals'):
-            approval._pending_approvals[msg_id] = level
+            bot.resolve_approval(msg_id, level_str)
 
     # Telegram bot
     tg_config = config.telegram

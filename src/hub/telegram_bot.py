@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -111,6 +112,8 @@ class TelegramBot:
 
         # topic_id cache: mission_id -> telegram topic id
         self._mission_topics: dict[str, int] = {}
+        # Pending approval futures: msg_id -> Future[ApprovalLevel | None]
+        self._pending_approvals: dict[str, asyncio.Future] = {}
 
     def _setup_handlers(self) -> None:
         """Register all command and message handlers."""
@@ -155,8 +158,11 @@ class TelegramBot:
         )
         return topic_id
 
-    async def request_approval(self, msg: Message) -> None:
-        """Send an approval request with inline keyboard to the supergroup."""
+    async def request_approval(self, msg: Message, timeout: int = 300) -> str | None:
+        """Send an approval request and wait for human response.
+
+        Returns the approval level string ('once', 'mission', 'always') or None if denied/timeout.
+        """
         bot: Bot = self.app.bot
         text = (
             f"\U0001f514 *Approval Required*\n\n"
@@ -166,12 +172,35 @@ class TelegramBot:
             f"{msg.payload.get('message', '')[:500]}"
         )
         keyboard = build_approval_keyboard(msg)
+
+        # Create a future that the callback handler will resolve
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        self._pending_approvals[msg.id] = future
+
         await bot.send_message(
             chat_id=self.supergroup_id,
             text=text,
             reply_markup=keyboard,
             parse_mode="Markdown",
         )
+
+        try:
+            result = await asyncio.wait_for(future, timeout=timeout)
+            return result
+        except asyncio.TimeoutError:
+            logger.warning("Approval timeout for message %s", msg.id)
+            return None
+        finally:
+            self._pending_approvals.pop(msg.id, None)
+
+    def resolve_approval(self, msg_id: str, level: str | None) -> None:
+        """Resolve a pending approval future (called by callback handler)."""
+        future = self._pending_approvals.get(msg_id)
+        if future and not future.done():
+            future.set_result(level)
+        elif not future:
+            logger.warning("No pending approval for message %s", msg_id)
 
     async def get_thread_history(
         self, mission_id: str, limit: int = 20

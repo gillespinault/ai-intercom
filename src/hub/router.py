@@ -22,7 +22,7 @@ class Router:
         approval_engine: ApprovalEngine,
         send_to_daemon: Callable[[str, dict, str], Awaitable[dict]],
         send_telegram: Callable[[Message], Awaitable[None]],
-        request_approval: Callable[[Message], Awaitable[ApprovalLevel | None]],
+        request_approval: Callable[[Message], Awaitable[str | None]],
     ):
         self.registry = registry
         self.approval = approval_engine
@@ -53,16 +53,19 @@ class Router:
 
         # Check approval
         level = self.approval.evaluate(msg)
-        if level == ApprovalLevel.ONCE:
-            granted = await self.request_approval(msg)
-            if granted is None:
+        if level in (ApprovalLevel.ONCE, ApprovalLevel.MISSION, ApprovalLevel.SESSION):
+            granted_str = await self.request_approval(msg)
+            if granted_str is None:
                 return {"status": "denied", "error": "Approval denied or timed out"}
-            if granted in (
-                ApprovalLevel.MISSION,
-                ApprovalLevel.SESSION,
-                ApprovalLevel.ALWAYS_ALLOW,
-            ):
-                self.approval.grant(msg.mission_id, msg.from_agent, msg.to_agent, granted)
+            # Map callback string to ApprovalLevel for grant storage
+            grant_map = {
+                "once": None,  # No persistent grant
+                "mission": ApprovalLevel.MISSION,
+                "always": ApprovalLevel.ALWAYS_ALLOW,
+            }
+            grant_level = grant_map.get(granted_str)
+            if grant_level:
+                self.approval.grant(msg.mission_id, msg.from_agent, msg.to_agent, grant_level)
 
         # Post to Telegram for visibility
         await self.send_telegram(msg)
