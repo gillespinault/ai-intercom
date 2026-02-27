@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from pathlib import Path
 
@@ -18,6 +19,17 @@ from src.shared.config import IntercomConfig
 from src.shared.models import Message
 
 logger = logging.getLogger(__name__)
+
+
+def _format_elapsed(seconds: int) -> str:
+    """Format seconds into a human-readable string."""
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    secs = seconds % 60
+    if secs:
+        return f"{minutes}m{secs:02d}s"
+    return f"{minutes}m"
 
 
 async def send_to_daemon(daemon_url: str, message: dict, token: str) -> dict:
@@ -170,17 +182,21 @@ async def run_hub(config: IntercomConfig) -> None:
         # Look up target machine directly (skip router to avoid forum topic)
         machine = await registry.get_machine(machine_id)
         if not machine:
-            await update.message.reply_text(f"Machine `{machine_id}` inconnue.")
+            await update.message.reply_text(f"\u274c Machine `{machine_id}` inconnue.")
             return
         if machine["status"] != "online":
             await update.message.reply_text(
-                f"Machine `{machine_id}` est {machine['status']}."
+                f"\u26a0\ufe0f Machine `{machine_id}` est {machine['status']}."
             )
             return
 
-        # Send a thinking message that will be edited with the response
+        mission_id = str(uuid.uuid4())
+
+        # Send initial status message with target info
         thinking_msg = await update.message.reply_text(
-            "\u2728 _Reflexion en cours..._", parse_mode="Markdown"
+            f"\U0001f680 *Mission envoyee* \u2192 `{target}`\n"
+            f"\u23f3 _Lancement de l'agent..._",
+            parse_mode="Markdown",
         )
 
         # Keep typing indicator alive while waiting
@@ -202,8 +218,10 @@ async def run_hub(config: IntercomConfig) -> None:
             to_agent=target,
             type="start_agent",
             payload={"mission": mission},
-            mission_id=str(uuid.uuid4()),
+            mission_id=mission_id,
         )
+
+        t0 = time.monotonic()
 
         try:
             result = await send_to_daemon(
@@ -213,22 +231,43 @@ async def run_hub(config: IntercomConfig) -> None:
             logger.exception("Dispatch failed")
             typing_active = False
             typing_task.cancel()
-            await thinking_msg.edit_text(f"Dispatch error: {e}")
+            await thinking_msg.edit_text(
+                f"\u274c *Echec de dispatch*\n`{target}` \u2014 {e}",
+                parse_mode="Markdown",
+            )
             return
 
         # Non-blocking: daemon returns immediately, poll for result
-        mission_id = result.get("mission_id")
-        if result.get("status") == "launched" and mission_id:
+        resp_mission_id = result.get("mission_id", mission_id)
+        if result.get("status") == "launched" and resp_mission_id:
             daemon_url = machine["daemon_url"]
             poll_timeout = 300  # 5 minutes max
+            poll_interval = 5
+            progress_interval = 15  # Update Telegram message every 15s
             elapsed = 0
+            last_progress_update = 0
+
             while elapsed < poll_timeout:
-                await asyncio.sleep(5)
-                elapsed += 5
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+
+                # Update progress message periodically
+                if elapsed - last_progress_update >= progress_interval:
+                    last_progress_update = elapsed
+                    elapsed_str = _format_elapsed(elapsed)
+                    try:
+                        await thinking_msg.edit_text(
+                            f"\U0001f680 *Mission* \u2192 `{target}`\n"
+                            f"\u2699\ufe0f _Agent en cours..._ ({elapsed_str})",
+                            parse_mode="Markdown",
+                        )
+                    except Exception:
+                        pass  # Telegram rate limit or same content
+
                 try:
                     async with httpx.AsyncClient(timeout=10) as poll_client:
                         resp = await poll_client.get(
-                            f"{daemon_url}/api/missions/{mission_id}"
+                            f"{daemon_url}/api/missions/{resp_mission_id}"
                         )
                         status_data = resp.json()
                         if status_data.get("status") in ("completed", "failed"):
@@ -237,10 +276,28 @@ async def run_hub(config: IntercomConfig) -> None:
                 except Exception:
                     pass
             else:
-                result = {"output": f"Agent toujours en cours apres {poll_timeout}s..."}
+                total = _format_elapsed(int(time.monotonic() - t0))
+                result = {
+                    "status": "timeout",
+                    "output": (
+                        f"\u23f0 Agent toujours en cours apres {total}.\n"
+                        f"Mission ID: `{resp_mission_id}`\n"
+                        f"Verifiez avec /status ou attendez une notification."
+                    ),
+                }
+        elif result.get("status") == "launch_failed":
+            typing_active = False
+            typing_task.cancel()
+            error = result.get("error", "Unknown error")
+            await thinking_msg.edit_text(
+                f"\u274c *Echec de lancement*\n`{target}` \u2014 {error}",
+                parse_mode="Markdown",
+            )
+            return
 
         typing_active = False
         typing_task.cancel()
+        total_time = _format_elapsed(int(time.monotonic() - t0))
 
         # Extract output from response
         output = result.get("output", "")
@@ -254,19 +311,35 @@ async def run_hub(config: IntercomConfig) -> None:
         except (json.JSONDecodeError, TypeError):
             pass
 
+        # Build final message with status header
+        status = result.get("status", "unknown")
+        if status == "completed":
+            header = f"\u2705 *Termine* ({total_time})"
+        elif status == "failed":
+            header = f"\u274c *Echec* ({total_time})"
+        elif status == "timeout":
+            header = ""  # Timeout message is self-contained
+        else:
+            header = f"\U0001f4e8 *Reponse* ({total_time})"
+
+        if header:
+            full_output = f"{header}\n\n{output}"
+        else:
+            full_output = output
+
         # Truncate if too long for Telegram (4096 chars max)
-        if len(output) > 4000:
-            output = output[:4000] + "\n\n... (tronque)"
+        if len(full_output) > 4000:
+            full_output = full_output[:4000] + "\n\n_... (tronque)_"
 
         try:
-            await thinking_msg.edit_text(output, parse_mode="Markdown")
+            await thinking_msg.edit_text(full_output, parse_mode="Markdown")
         except Exception:
             # Fallback to plain text if Markdown fails
             try:
-                await thinking_msg.edit_text(output)
+                await thinking_msg.edit_text(full_output)
             except Exception as e:
                 logger.warning("Failed to edit thinking message: %s", e)
-                await update.message.reply_text(output)
+                await update.message.reply_text(full_output)
 
     # Telegram bot
     tg_config = config.telegram

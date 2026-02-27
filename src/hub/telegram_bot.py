@@ -219,6 +219,30 @@ class TelegramBot:
         elif not future:
             logger.warning("No pending approval for message %s", msg_id)
 
+    async def post_text_to_mission(self, mission_id: str, text: str) -> bool:
+        """Post raw text to a mission's forum topic. Returns False if no topic exists."""
+        topic_id = self._mission_topics.get(mission_id)
+        if topic_id is None:
+            return False
+        bot: Bot = self.app.bot
+        try:
+            await bot.send_message(
+                chat_id=self.supergroup_id,
+                message_thread_id=topic_id,
+                text=text,
+                parse_mode="Markdown",
+            )
+        except Exception:
+            try:
+                await bot.send_message(
+                    chat_id=self.supergroup_id,
+                    message_thread_id=topic_id,
+                    text=text,
+                )
+            except Exception:
+                return False
+        return True
+
     async def get_thread_history(
         self, mission_id: str, limit: int = 20
     ) -> list[dict]:
