@@ -41,6 +41,15 @@ async def run_daemon(config: IntercomConfig) -> None:
     )
     app.state.launcher = launcher
 
+    # Build project_paths mapping for agent launching
+    projects = config.projects
+    if not projects:
+        scan_paths = config.discovery.get("scan_paths", [])
+        if scan_paths:
+            projects = _discover_projects(scan_paths)
+    app.state.project_paths = {p["id"]: p.get("path", ".") for p in projects}
+    logger.info("Project paths: %s", app.state.project_paths)
+
     # Register with hub
     hub_url = config.hub.get("url", "")
     if hub_url:

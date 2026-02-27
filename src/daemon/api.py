@@ -59,15 +59,24 @@ def create_app(machine_id: str, token: str) -> FastAPI:
         if msg_type in ("ask", "start_agent") and app.state.launcher:
             to_agent = data.get("to_agent", "")
             project = to_agent.split("/", 1)[1] if "/" in to_agent else to_agent
-            mission = data.get("payload", {}).get("mission", "")
-            message = data.get("payload", {}).get("message", mission)
+            payload = data.get("payload", {})
+            mission = payload.get("mission") or payload.get("message", "")
+            agent_command = payload.get("agent_command")
+
+            # Resolve project path from registry or use working directory
+            project_path = "."
+            if hasattr(app.state, "project_paths"):
+                project_path = app.state.project_paths.get(project, ".")
+
             try:
                 result = await app.state.launcher.launch(
-                    project_id=project,
-                    mission=message,
+                    mission=mission,
+                    context_messages=[],
                     mission_id=mission_id,
+                    project_path=project_path,
+                    agent_command=agent_command,
                 )
-                return {"status": "launched", "mission_id": mission_id, **result}
+                return {"status": "launched", "mission_id": mission_id, "output": result}
             except Exception as e:
                 logger.error("Failed to launch agent: %s", e)
                 return {"status": "launch_failed", "mission_id": mission_id, "error": str(e)}
