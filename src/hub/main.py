@@ -215,9 +215,32 @@ async def run_hub(config: IntercomConfig) -> None:
             typing_task.cancel()
             await thinking_msg.edit_text(f"Dispatch error: {e}")
             return
-        finally:
-            typing_active = False
-            typing_task.cancel()
+
+        # Non-blocking: daemon returns immediately, poll for result
+        mission_id = result.get("mission_id")
+        if result.get("status") == "launched" and mission_id:
+            daemon_url = machine["daemon_url"]
+            poll_timeout = 300  # 5 minutes max
+            elapsed = 0
+            while elapsed < poll_timeout:
+                await asyncio.sleep(5)
+                elapsed += 5
+                try:
+                    async with httpx.AsyncClient(timeout=10) as poll_client:
+                        resp = await poll_client.get(
+                            f"{daemon_url}/api/missions/{mission_id}"
+                        )
+                        status_data = resp.json()
+                        if status_data.get("status") in ("completed", "failed"):
+                            result = status_data
+                            break
+                except Exception:
+                    pass
+            else:
+                result = {"output": f"Agent toujours en cours apres {poll_timeout}s..."}
+
+        typing_active = False
+        typing_task.cancel()
 
         # Extract output from response
         output = result.get("output", "")

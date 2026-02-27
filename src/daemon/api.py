@@ -55,7 +55,7 @@ def create_app(machine_id: str, token: str) -> FastAPI:
         msg_type = data.get("type", "send")
         app.state.active_missions[mission_id] = data
 
-        # Launch agent for actionable message types
+        # Launch agent for actionable message types (non-blocking)
         if msg_type in ("ask", "start_agent") and app.state.launcher:
             to_agent = data.get("to_agent", "")
             project = to_agent.split("/", 1)[1] if "/" in to_agent else to_agent
@@ -69,18 +69,34 @@ def create_app(machine_id: str, token: str) -> FastAPI:
                 project_path = app.state.project_paths.get(project, ".")
 
             try:
-                result = await app.state.launcher.launch(
+                await app.state.launcher.launch_background(
                     mission=mission,
                     context_messages=[],
                     mission_id=mission_id,
                     project_path=project_path,
                     agent_command=agent_command,
                 )
-                return {"status": "launched", "mission_id": mission_id, "output": result}
+                return {"status": "launched", "mission_id": mission_id}
             except Exception as e:
                 logger.error("Failed to launch agent: %s", e)
                 return {"status": "launch_failed", "mission_id": mission_id, "error": str(e)}
 
         return {"status": "received", "mission_id": mission_id}
+
+    @app.get("/api/missions/{mission_id}")
+    async def mission_status(mission_id: str):
+        """Get the status of a mission running on this daemon."""
+        if not app.state.launcher:
+            return Response(status_code=404, content="No launcher configured")
+        result = app.state.launcher.get_status(mission_id)
+        if not result:
+            return Response(status_code=404, content="Mission not found")
+        return {
+            "mission_id": mission_id,
+            "status": result.status,
+            "output": result.output,
+            "started_at": result.started_at,
+            "finished_at": result.finished_at,
+        }
 
     return app

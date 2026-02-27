@@ -9,6 +9,7 @@ def tools():
         hub_client=AsyncMock(),
         machine_id="serverlab",
         current_project="infra",
+        poll_interval=0.1,  # fast polling for tests
     )
 
 
@@ -27,15 +28,32 @@ async def test_send_message(tools):
     assert result["status"] == "sent"
 
 
-async def test_ask_message(tools):
+async def test_ask_polls_until_completed(tools):
+    """ask() should route then poll daemon-status until completed."""
     tools.hub_client.ask.return_value = {
+        "status": "launched",
+        "mission_id": "m-poll-1",
+    }
+    tools.hub_client.get_daemon_mission_status.return_value = {
+        "mission_id": "m-poll-1",
         "status": "completed",
-        "response": "done",
-        "mission_id": "m-001",
+        "output": "All done",
     }
     result = await tools.ask(to="vps/nginx", message="do something", timeout=60)
     assert result["status"] == "completed"
-    assert result["response"] == "done"
+    assert result["output"] == "All done"
+    tools.hub_client.get_daemon_mission_status.assert_called()
+
+
+async def test_ask_returns_immediately_on_error(tools):
+    """ask() should not poll if route returns an error."""
+    tools.hub_client.ask.return_value = {
+        "status": "denied",
+        "mission_id": "m-denied",
+    }
+    result = await tools.ask(to="vps/nginx", message="do something")
+    assert result["status"] == "denied"
+    tools.hub_client.get_daemon_mission_status.assert_not_called()
 
 
 async def test_register_update(tools):
@@ -45,3 +63,31 @@ async def test_register_update(tools):
         project={"description": "Updated desc", "capabilities": ["new"]},
     )
     assert result["status"] == "updated"
+
+
+async def test_report_feedback(tools):
+    tools.hub_client.submit_feedback.return_value = {
+        "status": "stored",
+        "timestamp": "2026-02-27T12:00:00Z",
+    }
+    result = await tools.report_feedback(
+        feedback_type="bug",
+        description="intercom_ask times out",
+        context="httpx.ReadTimeout after 30s",
+    )
+    assert result["status"] == "stored"
+    tools.hub_client.submit_feedback.assert_called_once_with(
+        from_agent="serverlab/infra",
+        feedback_type="bug",
+        description="intercom_ask times out",
+        context="httpx.ReadTimeout after 30s",
+    )
+
+
+async def test_daemon_status(tools):
+    tools.hub_client.get_daemon_mission_status.return_value = {
+        "mission_id": "m-001",
+        "status": "running",
+    }
+    result = await tools.daemon_status(mission_id="m-001")
+    assert result["status"] == "running"

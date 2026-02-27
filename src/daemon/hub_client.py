@@ -18,17 +18,17 @@ class HubClient:
         headers["Content-Type"] = "application/json"
         return headers
 
-    async def _post(self, path: str, data: dict) -> dict:
+    async def _post(self, path: str, data: dict, timeout: int = 120) -> dict:
         body = json.dumps(data).encode()
         headers = self._auth_headers(body)
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 f"{self.hub_url}{path}", content=body, headers=headers
             )
             return resp.json()
 
-    async def _get(self, path: str, params: dict | None = None) -> dict:
-        async with httpx.AsyncClient(timeout=10) as client:
+    async def _get(self, path: str, params: dict | None = None, timeout: int = 15) -> dict:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.get(f"{self.hub_url}{path}", params=params)
             return resp.json()
 
@@ -99,6 +99,27 @@ class HubClient:
     async def get_history(self, mission_id: str, limit: int = 50) -> dict:
         return await self._get(
             f"/api/missions/{mission_id}/history", {"limit": limit}
+        )
+
+    async def get_daemon_mission_status(self, mission_id: str) -> dict:
+        """Get mission status from the daemon running it (via hub proxy)."""
+        return await self._get(f"/api/missions/{mission_id}/daemon-status")
+
+    async def submit_feedback(
+        self,
+        from_agent: str,
+        feedback_type: str,
+        description: str,
+        context: str = "",
+    ) -> dict:
+        return await self._post(
+            "/api/feedback",
+            {
+                "from_agent": from_agent,
+                "type": feedback_type,
+                "description": description,
+                "context": context,
+            },
         )
 
     async def register(

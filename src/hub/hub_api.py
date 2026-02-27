@@ -6,8 +6,11 @@ import json
 import logging
 import secrets
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, Request, Response
 
 from src.hub.registry import Registry
@@ -323,7 +326,7 @@ def create_hub_api(
         mission_id = data.get("mission_id", "unknown")
         msg_type = data.get("type", "send")
 
-        # Launch agent for actionable message types
+        # Launch agent for actionable message types (non-blocking)
         if msg_type in ("ask", "start_agent") and app.state.launcher:
             to_agent = data.get("to_agent", "")
             project = to_agent.split("/", 1)[1] if "/" in to_agent else to_agent
@@ -338,18 +341,14 @@ def create_hub_api(
             )
 
             try:
-                result = await app.state.launcher.launch(
+                await app.state.launcher.launch_background(
                     mission=mission,
                     context_messages=[],
                     mission_id=mission_id,
                     project_path=project_path,
                     agent_command=agent_command,
                 )
-                return {
-                    "status": "launched",
-                    "mission_id": mission_id,
-                    "output": result,
-                }
+                return {"status": "launched", "mission_id": mission_id}
             except Exception as e:
                 logger.error("Failed to launch agent: %s", e)
                 return {
@@ -359,5 +358,77 @@ def create_hub_api(
                 }
 
         return {"status": "received", "mission_id": mission_id}
+
+    @app.get("/api/missions/{mission_id}/daemon-status")
+    async def get_daemon_mission_status(mission_id: str):
+        """Proxy mission status from the daemon running the mission.
+
+        First checks the local launcher (standalone mode), then looks up
+        the mission in mission_store to find the target daemon.
+        """
+        # Check local launcher first (standalone mode)
+        if app.state.launcher:
+            result = app.state.launcher.get_status(mission_id)
+            if result:
+                return {
+                    "mission_id": mission_id,
+                    "status": result.status,
+                    "output": result.output,
+                    "started_at": result.started_at,
+                    "finished_at": result.finished_at,
+                }
+
+        # Look up mission in store to find target machine
+        history = app.state.mission_store.get(mission_id)
+        if not history:
+            return Response(status_code=404, content="Mission not found")
+
+        # Find target machine from the last message
+        last_msg = history[-1]
+        to_agent = last_msg.get("to_agent", "")
+        machine_id = to_agent.split("/")[0] if "/" in to_agent else to_agent
+
+        machine = await registry.get_machine(machine_id)
+        if not machine:
+            return Response(status_code=404, content=f"Machine {machine_id} not found")
+
+        # Forward status request to the daemon
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"{machine['daemon_url']}/api/missions/{mission_id}"
+                )
+                return resp.json()
+        except Exception as e:
+            return {"mission_id": mission_id, "status": "unreachable", "error": str(e)}
+
+    # --- Feedback ---
+
+    @app.post("/api/feedback")
+    async def submit_feedback(request: Request):
+        """Store structured feedback from agents."""
+        data = await request.json()
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "from_agent": data.get("from_agent", "unknown"),
+            "type": data.get("type", "note"),
+            "description": data.get("description", ""),
+            "context": data.get("context", ""),
+        }
+        feedback_path = Path("data/feedback.jsonl")
+        feedback_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(feedback_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+        return {"status": "stored", "timestamp": entry["timestamp"]}
+
+    @app.get("/api/feedback")
+    async def list_feedback(limit: int = 50):
+        """List recent feedback entries."""
+        feedback_path = Path("data/feedback.jsonl")
+        if not feedback_path.exists():
+            return {"feedback": []}
+        lines = feedback_path.read_text().strip().split("\n")
+        entries = [json.loads(line) for line in lines[-limit:] if line.strip()]
+        return {"feedback": entries}
 
     return app
