@@ -64,11 +64,26 @@ async def run_daemon(config: IntercomConfig) -> None:
 
 
 def _discover_projects(scan_paths: list[str]) -> list[dict]:
-    """Auto-discover Claude Code projects by looking for .claude/ or CLAUDE.md markers."""
+    """Auto-discover Claude Code projects by looking for .claude/ or CLAUDE.md markers.
+
+    Always includes a "home" project pointing to the first scan_path (typically $HOME),
+    providing a non-project agent for general admin tasks.
+    """
     from pathlib import Path
 
     projects = []
     seen = set()
+
+    # Always register "home" project for admin tasks outside any project
+    home_path = Path.home()
+    projects.append({
+        "id": "home",
+        "description": f"Home agent for admin tasks ({home_path})",
+        "capabilities": ["admin", "system"],
+        "path": str(home_path),
+        "agent_command": "claude",
+    })
+    seen.add("home")
 
     for scan_path in scan_paths:
         base = Path(scan_path).expanduser()

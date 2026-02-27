@@ -6,6 +6,43 @@ import logging
 import sys
 
 
+def _detect_current_project(config) -> str:
+    """Detect which project the MCP server is running in based on CWD.
+
+    Walks up from the current working directory looking for CLAUDE.md or
+    .claude/ markers.  If a match is found among discovered projects, return
+    that project ID.  Otherwise return "home" (general admin agent).
+    """
+    import os
+    from pathlib import Path
+
+    cwd = Path(os.getcwd()).resolve()
+
+    # Build a mapping of resolved paths -> project IDs from config
+    project_map: dict[Path, str] = {}
+    projects = config.projects
+    if not projects:
+        scan_paths = config.discovery.get("scan_paths", [])
+        if scan_paths:
+            from src.daemon.main import _discover_projects
+            projects = _discover_projects(scan_paths)
+
+    for proj in projects:
+        proj_path = Path(proj.get("path", ".")).resolve()
+        project_map[proj_path] = proj["id"]
+
+    # Check if CWD is inside any known project (walk up)
+    path = cwd
+    while True:
+        if path in project_map:
+            return project_map[path]
+        if path.parent == path:
+            break
+        path = path.parent
+
+    return "home"
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -41,7 +78,11 @@ def main() -> None:
 
         config = load_config(os.path.expanduser(args.config))
         client = HubClient(config.hub.get("url", ""), config.auth.get("token", ""), config.machine_id)
-        tools = IntercomTools(client, config.machine_id, "default")
+
+        # Auto-detect current project from working directory
+        current_project = _detect_current_project(config)
+
+        tools = IntercomTools(client, config.machine_id, current_project)
         mcp = create_mcp_server(tools)
         mcp.run()
     elif args.command in ("hub", "daemon", "standalone"):
