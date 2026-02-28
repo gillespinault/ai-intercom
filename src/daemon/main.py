@@ -12,6 +12,8 @@ from src.shared.config import IntercomConfig
 
 logger = logging.getLogger(__name__)
 
+_daemon_app = None
+
 
 def _detect_tailscale_ip(config_override: str = "") -> str:
     """Detect this machine's Tailscale IPv4 address.
@@ -36,8 +38,11 @@ def _detect_tailscale_ip(config_override: str = "") -> str:
 async def run_daemon(config: IntercomConfig) -> None:
     logger.info("Starting AI-Intercom Daemon (machine=%s)", config.machine_id)
 
+    global _daemon_app
+
     token = config.auth.get("token", "")
     app = create_app(machine_id=config.machine_id, token=token)
+    _daemon_app = app
 
     launcher_cfg = config.agent_launcher
     launcher = AgentLauncher(
@@ -187,10 +192,23 @@ async def _heartbeat_loop(hub_url: str, machine_id: str, token: str, daemon_port
         try:
             tailscale_ip = _detect_tailscale_ip(ip_override)
             daemon_url = f"http://{tailscale_ip}:{daemon_port}" if tailscale_ip else ""
+
+            # Collect active sessions from daemon API
+            active_sessions = []
+            if _daemon_app and hasattr(_daemon_app.state, "active_sessions"):
+                for s in _daemon_app.state.active_sessions.values():
+                    active_sessions.append({
+                        "session_id": s["session_id"],
+                        "project": s["project"],
+                        "status": s.get("status", "active"),
+                        "summary": s.get("summary", ""),
+                    })
+
             body = json.dumps({
                 "machine_id": machine_id,
                 "tailscale_ip": tailscale_ip,
                 "daemon_url": daemon_url,
+                "active_sessions": active_sessions,
             }).encode()
             headers = sign_request(body, machine_id, token)
             headers["Content-Type"] = "application/json"

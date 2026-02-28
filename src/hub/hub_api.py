@@ -247,6 +247,12 @@ def create_hub_api(
             machine_id, active_agents=data.get("active_agents", [])
         )
 
+        # Store active sessions from daemon
+        active_sessions = data.get("active_sessions", [])
+        if not hasattr(app.state, "machine_sessions"):
+            app.state.machine_sessions = {}
+        app.state.machine_sessions[machine_id] = active_sessions
+
         # Update IP/daemon_url if provided (keeps registry in sync)
         tailscale_ip = data.get("tailscale_ip", "")
         daemon_url = data.get("daemon_url", "")
@@ -533,6 +539,16 @@ def create_hub_api(
         agents = await registry.list_agents(
             filter_status=filter if filter != "all" else None
         )
+
+        # Enrich with active session info
+        machine_sessions = getattr(app.state, "machine_sessions", {})
+        for agent in agents:
+            mid = agent.get("machine_id", "")
+            pid = agent.get("project_id", "")
+            sessions = machine_sessions.get(mid, [])
+            session = next((s for s in sessions if s["project"] == pid), None)
+            agent["session"] = session
+
         return {"agents": agents}
 
     @app.get("/api/machines")
