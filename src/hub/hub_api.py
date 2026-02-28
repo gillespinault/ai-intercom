@@ -51,6 +51,8 @@ def create_hub_api(
     app.state.project_paths = project_paths or {}
     app.state.pending_joins: dict[str, dict] = {}
     app.state.mission_store: dict[str, list[dict]] = {}
+    app.state.thread_store: dict[str, dict] = {}
+    app.state.machine_sessions: dict[str, list] = {}
 
     # --- Auth helper ---
 
@@ -249,8 +251,6 @@ def create_hub_api(
 
         # Store active sessions from daemon
         active_sessions = data.get("active_sessions", [])
-        if not hasattr(app.state, "machine_sessions"):
-            app.state.machine_sessions = {}
         app.state.machine_sessions[machine_id] = active_sessions
 
         # Update IP/daemon_url if provided (keeps registry in sync)
@@ -284,33 +284,42 @@ def create_hub_api(
             return Response(status_code=401, content="Unauthorized")
 
         mission_id = data.get("mission_id") or str(uuid.uuid4())
-        msg = Message(
-            id=str(uuid.uuid4()),
-            from_agent=from_agent,
-            to_agent=data.get("to_agent", ""),
-            type=data.get("type", "send"),
-            payload=data.get("payload", {}),
-            mission_id=mission_id,
-        )
-
-        # Store in mission history
-        if mission_id not in app.state.mission_store:
-            app.state.mission_store[mission_id] = []
-        app.state.mission_store[mission_id].append(msg.model_dump())
+        msg_type = data.get("type", "send")
+        to_agent_raw = data.get("to_agent", "")
 
         # Handle chat messages: deliver to active session, don't launch agent
-        if msg.type == "chat":
-            to_agent = data.get("to_agent", "")
+        if msg_type == "chat":
+            to_agent = to_agent_raw
+            thread_id = data.get("payload", {}).get("thread_id", "")
+
+            # Resolve recipient from thread_store when to_agent is empty (reply)
+            if not to_agent and thread_id:
+                thread_info = app.state.thread_store.get(thread_id)
+                if thread_info:
+                    participants = thread_info.get("participants", [])
+                    to_agent = next(
+                        (p for p in participants if p != from_agent), ""
+                    )
+                if not to_agent:
+                    return {"status": "error", "error": f"Cannot resolve recipient for thread {thread_id}"}
+
+            # Store in mission history
+            if mission_id not in app.state.mission_store:
+                app.state.mission_store[mission_id] = []
+            app.state.mission_store[mission_id].append({
+                "from_agent": from_agent,
+                "to_agent": to_agent,
+                "type": "chat",
+                "payload": data.get("payload", {}),
+                "mission_id": mission_id,
+            })
+
             target_machine = to_agent.split("/")[0] if "/" in to_agent else to_agent
             target_project = to_agent.split("/", 1)[1] if "/" in to_agent else ""
             machine = await registry.get_machine(target_machine)
 
-            thread_id = data.get("payload", {}).get("thread_id", "")
-
             # Store thread mapping for replies
             if thread_id:
-                if not hasattr(app.state, "thread_store"):
-                    app.state.thread_store = {}
                 if thread_id not in app.state.thread_store:
                     app.state.thread_store[thread_id] = {
                         "participants": [from_agent, to_agent],
@@ -318,6 +327,25 @@ def create_hub_api(
 
             if not machine:
                 return {"status": "error", "error": f"Machine {target_machine} not found"}
+
+            chat_message = data.get("payload", {}).get("message", "")
+
+            # Post to Telegram for human visibility
+            if telegram_bot:
+                is_reply = not data.get("to_agent", "")
+                emoji = "\u21a9\ufe0f Reply" if is_reply else "\U0001f4e8 Chat"
+                tg_text = (
+                    f"{emoji} [{thread_id}]\n"
+                    f"{from_agent} \u2192 {to_agent}\n"
+                    f"\"{chat_message}\""
+                )
+                try:
+                    await telegram_bot.app.bot.send_message(
+                        chat_id=telegram_bot.supergroup_id,
+                        text=tg_text,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to send chat to Telegram: %s", e)
 
             # Try to deliver to active session on daemon
             try:
@@ -328,11 +356,20 @@ def create_hub_api(
                             "project": target_project,
                             "thread_id": thread_id,
                             "from_agent": from_agent,
-                            "message": data.get("payload", {}).get("message", ""),
-                            "timestamp": msg.timestamp,
+                            "message": chat_message,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                         },
                     )
                     if resp.status_code == 404:
+                        if telegram_bot:
+                            try:
+                                await telegram_bot.app.bot.send_message(
+                                    chat_id=telegram_bot.supergroup_id,
+                                    text=f"\u26a0\ufe0f Session: pas de session active pour `{to_agent}`",
+                                    parse_mode="Markdown",
+                                )
+                            except Exception:
+                                pass
                         return {"status": "no_active_session", "thread_id": thread_id}
 
                     result = resp.json()
@@ -340,6 +377,21 @@ def create_hub_api(
             except Exception as e:
                 logger.error("Chat delivery failed: %s", e)
                 return {"status": "error", "error": str(e), "thread_id": thread_id}
+
+        # Build Message for non-chat types (ask, send, start_agent, etc.)
+        msg = Message(
+            id=str(uuid.uuid4()),
+            from_agent=from_agent,
+            to_agent=to_agent_raw,
+            type=msg_type,
+            payload=data.get("payload", {}),
+            mission_id=mission_id,
+        )
+
+        # Store in mission history
+        if mission_id not in app.state.mission_store:
+            app.state.mission_store[mission_id] = []
+        app.state.mission_store[mission_id].append(msg.model_dump())
 
         result = await app.state.router.route(msg)
 
@@ -541,7 +593,7 @@ def create_hub_api(
         )
 
         # Enrich with active session info
-        machine_sessions = getattr(app.state, "machine_sessions", {})
+        machine_sessions = app.state.machine_sessions
         for agent in agents:
             mid = agent.get("machine_id", "")
             pid = agent.get("project_id", "")

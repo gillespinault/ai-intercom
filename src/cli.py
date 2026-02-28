@@ -159,35 +159,42 @@ def main() -> None:
         if not os.path.isdir(inbox_dir):
             sys.exit(0)
 
-        # Find inbox files with unread messages
+        # Find inbox files with unread messages (with file locking)
+        import fcntl
+
         unread_messages = []
         for inbox_file in glob.glob(os.path.join(inbox_dir, "*.jsonl")):
             try:
-                with open(inbox_file) as f:
-                    lines = f.readlines()
-                updated = False
-                file_messages = []
-                for line in lines:
-                    line = line.strip()
-                    if not line:
-                        continue
+                with open(inbox_file, "r+") as f:
+                    fcntl.flock(f, fcntl.LOCK_EX)
                     try:
-                        msg = json.loads(line)
-                        if not msg.get("read"):
-                            unread_messages.append(msg)
-                            msg["read"] = True
-                            updated = True
-                        file_messages.append(msg)
-                    except json.JSONDecodeError:
-                        file_messages.append(line)
+                        lines = f.readlines()
+                        updated = False
+                        file_messages = []
+                        for line in lines:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                msg = json.loads(line)
+                                if not msg.get("read"):
+                                    unread_messages.append(msg)
+                                    msg["read"] = True
+                                    updated = True
+                                file_messages.append(msg)
+                            except json.JSONDecodeError:
+                                file_messages.append(line)
 
-                if updated:
-                    with open(inbox_file, "w") as f:
-                        for m in file_messages:
-                            if isinstance(m, dict):
-                                f.write(json.dumps(m) + "\n")
-                            else:
-                                f.write(m + "\n")
+                        if updated:
+                            f.seek(0)
+                            f.truncate()
+                            for m in file_messages:
+                                if isinstance(m, dict):
+                                    f.write(json.dumps(m) + "\n")
+                                else:
+                                    f.write(m + "\n")
+                    finally:
+                        fcntl.flock(f, fcntl.LOCK_UN)
             except Exception:
                 pass
 

@@ -130,29 +130,37 @@ class IntercomTools:
         if not inbox.exists():
             return {"messages": [], "count": 0}
 
-        lines = inbox.read_text().strip().split("\n")
-        unread = []
-        all_messages = []
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                msg = json.loads(line)
-                if not msg.get("read"):
-                    unread.append(msg)
-                    msg["read"] = True
-                all_messages.append(msg)
-            except json.JSONDecodeError:
-                all_messages.append(line)
+        import fcntl
 
-        # Rewrite file with read markers
-        if unread:
-            with open(inbox, "w") as f:
-                for msg in all_messages:
-                    if isinstance(msg, dict):
-                        f.write(json.dumps(msg) + "\n")
-                    else:
-                        f.write(msg + "\n")
+        unread = []
+        with open(inbox, "r+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                lines = f.readlines()
+                all_messages = []
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line)
+                        if not msg.get("read"):
+                            unread.append(msg)
+                            msg["read"] = True
+                        all_messages.append(msg)
+                    except json.JSONDecodeError:
+                        all_messages.append(line)
+
+                if unread:
+                    f.seek(0)
+                    f.truncate()
+                    for msg in all_messages:
+                        if isinstance(msg, dict):
+                            f.write(json.dumps(msg) + "\n")
+                        else:
+                            f.write(msg + "\n")
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
 
         return {"messages": unread, "count": len(unread)}
 

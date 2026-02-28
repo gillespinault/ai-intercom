@@ -194,7 +194,9 @@ def create_app(machine_id: str, token: str) -> FastAPI:
             # PID exists but owned by different user — treat as alive
             pass
 
-        # Append JSONL line to inbox file
+        # Append JSONL line to inbox file (with file lock to prevent TOCTOU)
+        import fcntl
+
         inbox_path = Path(session["inbox_path"])
         inbox_path.parent.mkdir(parents=True, exist_ok=True)
         entry = {
@@ -205,7 +207,11 @@ def create_app(machine_id: str, token: str) -> FastAPI:
             "read": False,
         }
         with open(inbox_path, "a") as f:
-            f.write(json.dumps(entry) + "\n")
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                f.write(json.dumps(entry) + "\n")
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
 
         logger.info("Delivered message to session %s (thread=%s)", session["session_id"], entry["thread_id"])
         return {"status": "delivered"}
