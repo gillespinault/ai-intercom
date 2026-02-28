@@ -122,6 +122,46 @@ class HubClient:
             },
         )
 
+    async def route_chat(
+        self,
+        from_agent: str,
+        to: str,
+        message: str,
+        thread_id: str | None = None,
+    ) -> dict:
+        import uuid
+
+        payload: dict = {"message": message}
+        if thread_id:
+            payload["thread_id"] = thread_id
+        else:
+            payload["thread_id"] = f"t-{uuid.uuid4().hex[:6]}"
+        return await self._post(
+            "/api/route",
+            {
+                "from_agent": from_agent,
+                "to_agent": to,
+                "type": "chat",
+                "payload": payload,
+            },
+        )
+
+    async def route_reply(
+        self,
+        from_agent: str,
+        thread_id: str,
+        message: str,
+    ) -> dict:
+        return await self._post(
+            "/api/route",
+            {
+                "from_agent": from_agent,
+                "to_agent": "",  # Resolved by hub from thread context
+                "type": "chat",
+                "payload": {"message": message, "thread_id": thread_id},
+            },
+        )
+
     async def register(
         self,
         machine_id: str,
