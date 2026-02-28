@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
+import os
 import sys
 
 
@@ -67,6 +69,10 @@ def main() -> None:
     # MCP server
     mcp_parser = sub.add_parser("mcp-server", help="Run MCP server for local agents")
     mcp_parser.add_argument("--config", default="~/.config/ai-intercom/config.yml")
+
+    # Check inbox (hook)
+    inbox_parser = sub.add_parser("check-inbox", help="Check inbox for pending messages")
+    inbox_parser.add_argument("--format", choices=["hook", "json"], default="hook")
 
     args = parser.parse_args()
 
@@ -146,6 +152,61 @@ def main() -> None:
         else:
             from src.daemon.main import run_daemon
             asyncio.run(run_daemon(config))
+    elif args.command == "check-inbox":
+        import glob
+
+        inbox_dir = os.path.expanduser("~/.config/ai-intercom/inbox")
+        if not os.path.isdir(inbox_dir):
+            sys.exit(0)
+
+        # Find inbox files with unread messages
+        unread_messages = []
+        for inbox_file in glob.glob(os.path.join(inbox_dir, "*.jsonl")):
+            try:
+                with open(inbox_file) as f:
+                    lines = f.readlines()
+                updated = False
+                file_messages = []
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line)
+                        if not msg.get("read"):
+                            unread_messages.append(msg)
+                            msg["read"] = True
+                            updated = True
+                        file_messages.append(msg)
+                    except json.JSONDecodeError:
+                        file_messages.append(line)
+
+                if updated:
+                    with open(inbox_file, "w") as f:
+                        for m in file_messages:
+                            if isinstance(m, dict):
+                                f.write(json.dumps(m) + "\n")
+                            else:
+                                f.write(m + "\n")
+            except Exception:
+                pass
+
+        if not unread_messages:
+            sys.exit(0)
+
+        if args.format == "json":
+            print(json.dumps({"messages": unread_messages, "count": len(unread_messages)}))
+        else:
+            # Hook format: human-readable for system-reminder injection
+            print(f"\U0001f4e8 Messages intercom en attente ({len(unread_messages)}) :\n")
+            for msg in unread_messages:
+                from_agent = msg.get("from_agent", "unknown")
+                thread_id = msg.get("thread_id", "?")
+                message = msg.get("message", "")
+                ts = msg.get("timestamp", "")
+                print(f"[{thread_id}] {from_agent} ({ts}) :")
+                print(f'  "{message}"\n')
+            print('\u2192 Utilise intercom_reply("thread_id", "ta r\u00e9ponse") pour r\u00e9pondre.')
     else:
         parser.print_help()
         sys.exit(1)
