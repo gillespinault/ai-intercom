@@ -109,3 +109,219 @@ async def test_mission_status_not_found(app, client):
     app.state.launcher = launcher
     resp = await client.get("/api/missions/nonexistent")
     assert resp.status_code == 404
+
+
+# --- Session endpoint tests ---
+
+import json
+import os
+import tempfile
+
+from httpx import ASGITransport, AsyncClient
+
+
+async def _make_session_client():
+    """Helper: create a fresh app + async client for session tests."""
+    app = create_app("test-machine", "test-token")
+    transport = ASGITransport(app=app)
+    client = AsyncClient(transport=transport, base_url="http://test")
+    return app, client
+
+
+async def test_session_register():
+    app, client = await _make_session_client()
+    try:
+        resp = await client.post("/api/session/register", json={
+            "session_id": "sess-1",
+            "project": "my-project",
+            "pid": os.getpid(),
+            "inbox_path": "/tmp/test-inbox-register.jsonl",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "registered"
+        assert data["session_id"] == "sess-1"
+        assert "sess-1" in app.state.active_sessions
+    finally:
+        await client.aclose()
+
+
+async def test_session_register_then_list():
+    app, client = await _make_session_client()
+    try:
+        await client.post("/api/session/register", json={
+            "session_id": "sess-a",
+            "project": "proj-a",
+            "pid": os.getpid(),
+            "inbox_path": "/tmp/test-inbox-list-a.jsonl",
+        })
+        await client.post("/api/session/register", json={
+            "session_id": "sess-b",
+            "project": "proj-b",
+            "pid": os.getpid(),
+            "inbox_path": "/tmp/test-inbox-list-b.jsonl",
+        })
+        resp = await client.get("/api/sessions")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["sessions"]) == 2
+        session_ids = [s["session_id"] for s in data["sessions"]]
+        assert "sess-a" in session_ids
+        assert "sess-b" in session_ids
+    finally:
+        await client.aclose()
+
+
+async def test_session_unregister():
+    app, client = await _make_session_client()
+    inbox_file = None
+    try:
+        fd, inbox_file = tempfile.mkstemp(suffix=".jsonl", prefix="test-inbox-unreg-")
+        os.close(fd)
+
+        await client.post("/api/session/register", json={
+            "session_id": "sess-del",
+            "project": "proj-del",
+            "pid": os.getpid(),
+            "inbox_path": inbox_file,
+        })
+        assert "sess-del" in app.state.active_sessions
+
+        resp = await client.post("/api/session/unregister", json={
+            "session_id": "sess-del",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "unregistered"
+        assert "sess-del" not in app.state.active_sessions
+        # Inbox file should be cleaned up
+        assert not os.path.exists(inbox_file)
+    finally:
+        await client.aclose()
+        if inbox_file and os.path.exists(inbox_file):
+            os.unlink(inbox_file)
+
+
+async def test_session_deliver():
+    app, client = await _make_session_client()
+    inbox_file = None
+    try:
+        fd, inbox_file = tempfile.mkstemp(suffix=".jsonl", prefix="test-inbox-deliver-")
+        os.close(fd)
+
+        await client.post("/api/session/register", json={
+            "session_id": "sess-dlv",
+            "project": "proj-dlv",
+            "pid": os.getpid(),
+            "inbox_path": inbox_file,
+        })
+
+        resp = await client.post("/api/session/deliver", json={
+            "project": "proj-dlv",
+            "thread_id": "t-1",
+            "from_agent": "server/other",
+            "message": "Hello from other agent",
+            "timestamp": "2026-02-28T12:00:00Z",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "delivered"
+
+        # Verify JSONL content
+        with open(inbox_file, "r") as f:
+            lines = f.readlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["thread_id"] == "t-1"
+        assert entry["from_agent"] == "server/other"
+        assert entry["message"] == "Hello from other agent"
+        assert entry["read"] is False
+    finally:
+        await client.aclose()
+        if inbox_file and os.path.exists(inbox_file):
+            os.unlink(inbox_file)
+
+
+async def test_session_deliver_no_session():
+    _, client = await _make_session_client()
+    try:
+        resp = await client.post("/api/session/deliver", json={
+            "project": "nonexistent-project",
+            "thread_id": "t-x",
+            "from_agent": "server/other",
+            "message": "Nobody home",
+            "timestamp": "2026-02-28T12:00:00Z",
+        })
+        assert resp.status_code == 404
+        data = resp.json()
+        assert data["status"] == "no_active_session"
+    finally:
+        await client.aclose()
+
+
+async def test_session_deliver_dead_pid():
+    app, client = await _make_session_client()
+    inbox_file = None
+    try:
+        fd, inbox_file = tempfile.mkstemp(suffix=".jsonl", prefix="test-inbox-dead-")
+        os.close(fd)
+
+        # Register with a PID that almost certainly doesn't exist
+        await client.post("/api/session/register", json={
+            "session_id": "sess-dead",
+            "project": "proj-dead",
+            "pid": 999999,
+            "inbox_path": inbox_file,
+        })
+
+        resp = await client.post("/api/session/deliver", json={
+            "project": "proj-dead",
+            "thread_id": "t-dead",
+            "from_agent": "server/other",
+            "message": "Are you alive?",
+            "timestamp": "2026-02-28T12:00:00Z",
+        })
+        assert resp.status_code == 404
+        data = resp.json()
+        assert data["status"] == "no_active_session"
+        # Session should be cleaned up
+        assert "sess-dead" not in app.state.active_sessions
+    finally:
+        await client.aclose()
+        if inbox_file and os.path.exists(inbox_file):
+            os.unlink(inbox_file)
+
+
+async def test_session_status():
+    app, client = await _make_session_client()
+    inbox_file = None
+    try:
+        fd, inbox_file = tempfile.mkstemp(suffix=".jsonl", prefix="test-inbox-status-")
+        os.close(fd)
+
+        await client.post("/api/session/register", json={
+            "session_id": "sess-st",
+            "project": "proj-st",
+            "pid": os.getpid(),
+            "inbox_path": inbox_file,
+        })
+
+        # Deliver a message so inbox has content
+        await client.post("/api/session/deliver", json={
+            "session_id": "sess-st",
+            "thread_id": "t-st",
+            "from_agent": "server/other",
+            "message": "status check msg",
+            "timestamp": "2026-02-28T12:00:00Z",
+        })
+
+        resp = await client.get("/api/session/sess-st/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["session_id"] == "sess-st"
+        assert data["project"] == "proj-st"
+        assert data["inbox_pending"] == 1
+    finally:
+        await client.aclose()
+        if inbox_file and os.path.exists(inbox_file):
+            os.unlink(inbox_file)
