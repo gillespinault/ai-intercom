@@ -292,6 +292,49 @@ def create_hub_api(
             app.state.mission_store[mission_id] = []
         app.state.mission_store[mission_id].append(msg.model_dump())
 
+        # Handle chat messages: deliver to active session, don't launch agent
+        if msg.type == "chat":
+            to_agent = data.get("to_agent", "")
+            target_machine = to_agent.split("/")[0] if "/" in to_agent else to_agent
+            target_project = to_agent.split("/", 1)[1] if "/" in to_agent else ""
+            machine = await registry.get_machine(target_machine)
+
+            thread_id = data.get("payload", {}).get("thread_id", "")
+
+            # Store thread mapping for replies
+            if thread_id:
+                if not hasattr(app.state, "thread_store"):
+                    app.state.thread_store = {}
+                if thread_id not in app.state.thread_store:
+                    app.state.thread_store[thread_id] = {
+                        "participants": [from_agent, to_agent],
+                    }
+
+            if not machine:
+                return {"status": "error", "error": f"Machine {target_machine} not found"}
+
+            # Try to deliver to active session on daemon
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    resp = await client.post(
+                        f"{machine['daemon_url']}/api/session/deliver",
+                        json={
+                            "project": target_project,
+                            "thread_id": thread_id,
+                            "from_agent": from_agent,
+                            "message": data.get("payload", {}).get("message", ""),
+                            "timestamp": msg.timestamp,
+                        },
+                    )
+                    if resp.status_code == 404:
+                        return {"status": "no_active_session", "thread_id": thread_id}
+
+                    result = resp.json()
+                    return {"status": "delivered", "thread_id": thread_id, "mission_id": mission_id}
+            except Exception as e:
+                logger.error("Chat delivery failed: %s", e)
+                return {"status": "error", "error": str(e), "thread_id": thread_id}
+
         result = await app.state.router.route(msg)
 
         # Track launched missions in background for Telegram feedback

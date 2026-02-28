@@ -1,9 +1,12 @@
+import json
+
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from src.hub.hub_api import create_hub_api
 from src.hub.registry import Registry
 from src.shared.auth import sign_request
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 @pytest.fixture
@@ -49,3 +52,112 @@ async def test_heartbeat(client, registry):
     headers = sign_request(body, "vps", "tok")
     resp = await client.post("/api/heartbeat", content=body, headers=headers)
     assert resp.status_code == 200
+
+
+# --- Chat routing tests ---
+
+
+def _chat_route_body(
+    from_agent: str = "vps/AI-intercom",
+    to_agent: str = "laptop/my-project",
+    message: str = "Hello from vps",
+    thread_id: str = "t-001",
+) -> bytes:
+    """Build a JSON body for a chat route request."""
+    return json.dumps({
+        "from_agent": from_agent,
+        "to_agent": to_agent,
+        "type": "chat",
+        "payload": {"message": message, "thread_id": thread_id},
+    }).encode()
+
+
+async def _register_machines(registry: Registry) -> None:
+    """Register source (vps) and target (laptop) machines."""
+    await registry.register_machine(
+        "vps", "VPS Server", "10.0.0.1", "http://10.0.0.1:7700", "tok-vps"
+    )
+    await registry.register_machine(
+        "laptop", "Laptop", "10.0.0.2", "http://10.0.0.2:7700", "tok-laptop"
+    )
+
+
+def _mock_httpx_response(status_code: int, json_data: dict):
+    """Create a mock httpx response."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = status_code
+    mock_resp.json.return_value = json_data
+    return mock_resp
+
+
+async def test_route_chat_delivered(client, registry):
+    """Chat message delivered to daemon with active session (daemon responds 200)."""
+    await _register_machines(registry)
+
+    body = _chat_route_body()
+    headers = sign_request(body, "vps", "tok-vps")
+
+    mock_resp = _mock_httpx_response(200, {"status": "delivered"})
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_resp
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("src.hub.hub_api.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.post("/api/route", content=body, headers=headers)
+
+    data = resp.json()
+    assert resp.status_code == 200
+    assert data["status"] == "delivered"
+    assert data["thread_id"] == "t-001"
+    assert "mission_id" in data
+
+    # Verify the daemon was called with correct URL and payload
+    mock_client.post.assert_called_once()
+    call_args = mock_client.post.call_args
+    assert call_args[0][0] == "http://10.0.0.2:7700/api/session/deliver"
+    payload = call_args[1]["json"]
+    assert payload["project"] == "my-project"
+    assert payload["thread_id"] == "t-001"
+    assert payload["from_agent"] == "vps/AI-intercom"
+    assert payload["message"] == "Hello from vps"
+
+
+async def test_route_chat_no_session(client, registry):
+    """Daemon returns 404 (no active session), hub returns no_active_session."""
+    await _register_machines(registry)
+
+    body = _chat_route_body()
+    headers = sign_request(body, "vps", "tok-vps")
+
+    mock_resp = _mock_httpx_response(404, {"error": "no session"})
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_resp
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("src.hub.hub_api.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.post("/api/route", content=body, headers=headers)
+
+    data = resp.json()
+    assert resp.status_code == 200
+    assert data["status"] == "no_active_session"
+    assert data["thread_id"] == "t-001"
+
+
+async def test_route_chat_unknown_machine(client, registry):
+    """Target machine not in registry returns error."""
+    # Only register the source machine, NOT the target
+    await registry.register_machine(
+        "vps", "VPS Server", "10.0.0.1", "http://10.0.0.1:7700", "tok-vps"
+    )
+
+    body = _chat_route_body()
+    headers = sign_request(body, "vps", "tok-vps")
+
+    resp = await client.post("/api/route", content=body, headers=headers)
+
+    data = resp.json()
+    assert resp.status_code == 200
+    assert data["status"] == "error"
+    assert "laptop" in data["error"]
