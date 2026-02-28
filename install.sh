@@ -238,5 +238,37 @@ MCP_CONFIG='{
 
 echo "Add this to your project's .mcp.json to enable intercom tools:"
 echo "$MCP_CONFIG" | python3 -m json.tool 2>/dev/null || echo "$MCP_CONFIG"
+# --- Hook setup for interactive chat ---
+echo ""
+echo "=== Setting up chat hooks ==="
+INBOX_DIR="${HOME}/.config/ai-intercom/inbox"
+mkdir -p "$INBOX_DIR"
+
+SETTINGS_FILE="${HOME}/.claude/settings.local.json"
+if [ -f "$SETTINGS_FILE" ]; then
+    # Add hooks if not already present
+    if ! grep -q "check-inbox" "$SETTINGS_FILE" 2>/dev/null; then
+        echo "Adding PostToolUse and UserPromptSubmit hooks to $SETTINGS_FILE"
+        python3 -c "
+import json
+with open('$SETTINGS_FILE') as f:
+    settings = json.load(f)
+hooks = settings.setdefault('hooks', {})
+check_cmd = 'ai-intercom check-inbox --format hook'
+for hook_name in ['PostToolUse', 'UserPromptSubmit']:
+    existing = hooks.get(hook_name, [])
+    if not any(check_cmd in str(h) for h in existing):
+        existing.append({'command': check_cmd, 'timeout': 2000})
+    hooks[hook_name] = existing
+with open('$SETTINGS_FILE', 'w') as f:
+    json.dump(settings, f, indent=2)
+" 2>/dev/null && echo "Hooks installed." || echo "Could not auto-configure hooks. Add manually."
+    else
+        echo "Hooks already configured."
+    fi
+else
+    echo "No settings.local.json found. Hooks will need manual configuration."
+fi
+
 echo ""
 echo "=== Installation complete ==="
