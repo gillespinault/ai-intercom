@@ -85,9 +85,11 @@ curl http://<hub-ip>:7700/api/agents | python3 -m json.tool
 
 All machines and their projects should appear.
 
-## Option B: Docker (Hub Only)
+## Option B: Docker
 
-Docker is suitable for the hub. Daemons are better installed natively since they need to launch local AI agents.
+Docker works for both hub and daemon. For daemons, the container needs access to the host filesystem and Claude CLI credentials.
+
+### Hub (Docker)
 
 ```bash
 git clone https://github.com/gillespinault/ai-intercom.git
@@ -103,6 +105,31 @@ docker compose -f docker-compose.hub.yml up -d
 ```
 
 > **Note:** `network_mode: host` is required for Tailscale connectivity.
+
+### Daemon (Docker)
+
+The daemon container must mount the host home directory so agents can access project files and Claude CLI can find its credentials (`~/.claude/.credentials.json`).
+
+```bash
+# Edit .env
+echo "HUB_URL=http://<hub-tailscale-ip>:7700" >> .env
+echo "INTERCOM_TOKEN=<your-token>" >> .env
+
+# Start daemon
+docker compose -f docker-compose.daemon.yml up -d
+```
+
+The `docker-compose.daemon.yml` automatically mounts `$HOME` and sets the `HOME` environment variable. Verify with:
+
+```bash
+docker exec ai-intercom-daemon claude --version
+docker exec ai-intercom-daemon ls ~/.claude/.credentials.json
+```
+
+> **Common issue:** If agent launches fail with "path is not in allowed_paths", verify that:
+> 1. `HOME` is set correctly in the container (`docker exec ai-intercom-daemon env | grep HOME`)
+> 2. The host home directory is mounted (`docker exec ai-intercom-daemon ls /home/youruser/`)
+> 3. `allowed_paths` in config.yml includes your project directories
 
 ## Systemd Persistence
 
@@ -196,6 +223,16 @@ curl -sf http://<hub-tailscale-ip>:7700/api/discover
 - Check `allowed_paths` in config includes the project directory
 - Verify `claude` (or configured command) is in PATH
 - Check daemon logs for the specific error
+
+### Agent launches with exit code 1 and empty stderr
+- Check `HOME` is set correctly inside the container (Claude CLI needs `~/.claude/.credentials.json`)
+- Run `docker exec ai-intercom-daemon claude -p "hello" --output-format stream-json --verbose` to test
+- If using `--print` mode, `--verbose` is required for `stream-json` output (auto-added since v0.2.0)
+
+### No feedback showing during missions
+- Verify the daemon is running v0.2.0+ (check for `feedback` in `/api/missions/{id}` response)
+- The daemon uses `stream-json` output format internally; the original `json` format in `default_args` is automatically switched
+- Check daemon logs for stream parsing errors
 
 ### MCP server shows "home" instead of project name
 - The MCP server detects the project from the current working directory

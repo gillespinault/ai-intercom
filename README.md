@@ -47,6 +47,7 @@ A distributed inter-agent communication system that enables AI coding agents (Cl
 - **Tailscale auto-discovery** -- Install script scans the Tailscale network to find the hub automatically
 - **MCP integration** -- Seven tools exposed via Model Context Protocol so any MCP-compatible agent can use the intercom
 - **Agent launcher** -- Start AI agents on remote machines with mission context and path restrictions
+- **Real-time mission feedback** -- Live streaming of agent activity (tools used, files read, commands run) via Telegram progress messages
 - **Policy engine** -- Glob/regex-based approval rules with runtime grants (mission-level, session-level)
 - **SQLite registry** -- Persistent machine and project tracking with heartbeat monitoring
 - **Intelligent dispatcher** -- Send natural language messages in Telegram and Claude interprets and executes via MCP intercom tools
@@ -161,7 +162,7 @@ discovery:                 # Auto-detect projects on this machine
 
 agent_launcher:
   default_command: "claude"
-  default_args: ["-p", "--output-format", "json"]
+  default_args: ["-p", "--output-format", "json"]  # Automatically switched to stream-json for background missions
   allowed_paths: []        # Empty = allow all
   max_mission_duration: 1800
 
@@ -284,6 +285,14 @@ HUB_URL=http://<hub-ip>:7700
 INTERCOM_TOKEN=your-machine-token
 ```
 
+> **Important:** The daemon container needs access to Claude CLI credentials and the host filesystem for agent launching. Add to `docker-compose.daemon.yml`:
+> ```yaml
+> environment:
+>   - HOME=/home/youruser
+> volumes:
+>   - /home/youruser:/home/youruser
+> ```
+
 Both containers expose port 7700 and use the same `Dockerfile`.
 
 ## Development
@@ -321,7 +330,7 @@ src/
     main.py           # Daemon entry point (HTTP API + hub registration)
     api.py            # FastAPI: health, status, message receive
     hub_client.py     # HTTP client for hub communication
-    agent_launcher.py # Subprocess agent launcher with path validation
+    agent_launcher.py # Subprocess agent launcher with path validation and stream-json feedback
     mcp_server.py     # FastMCP server exposing 7 intercom tools
   cli.py              # CLI entry point (hub/daemon/standalone/mcp-server)
   main.py             # Module entry point

@@ -32,11 +32,10 @@ Actuellement chaque message Telegram est independant (pas de memoire de conversa
 
 ## Moyenne priorite
 
-### 4. Streaming des reponses dispatcher
-Actuellement la reponse arrive en bloc apres execution complete.
-- Streamer les chunks de reponse au fur et a mesure
-- Editer le message Telegram progressivement (comme ChatGPT)
-- Reduire le temps d'attente percu
+### 4. ~~Streaming des reponses dispatcher~~ → FAIT (v0.2.0)
+~~Actuellement la reponse arrive en bloc apres execution complete.~~
+Implemente via `stream-json` : le daemon collecte les FeedbackItems en temps reel et le hub edite le message Telegram progressivement avec les activites de l'agent (outils utilises, fichiers lus, commandes executees).
+Reste a faire : streamer le texte de reponse finale mot-a-mot (actuellement la reponse finale arrive en bloc).
 
 ### 5. Routing intelligent multi-target
 Le dispatcher envoie tout a un seul target (`serverlab/serverlab`). Il devrait pouvoir router directement vers la bonne machine selon la demande.
@@ -94,3 +93,4 @@ HMAC existe mais les tokens sont souvent vides.
 - [x] Auto-decouverte de projets (CLAUDE.md, .claude/)
 - [x] Join flow avec approbation Telegram
 - [x] Forum topics par mission
+- [x] Feedback granulaire des missions (stream-json, FeedbackItem, Telegram live updates)
