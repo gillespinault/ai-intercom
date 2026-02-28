@@ -97,3 +97,7 @@ HMAC existe mais les tokens sont souvent vides.
 - [x] Feedback granulaire des missions (stream-json, FeedbackItem, Telegram live updates)
 - [x] Skill `/intercom` (guide MCP + canal SAV) deploye sur serverlab, limn, vps
 - [x] Notification Telegram sur feedback agents (bug/improvement/note)
+- [x] Chat interactif agent-a-agent via `intercom_chat()` / `intercom_reply()` (v0.3.0)
+- [x] Hooks PostToolUse/UserPromptSubmit pour delivery automatique des messages (v0.3.0)
+- [x] Inbox fichier + CLI `check-inbox` pour integration hooks (v0.3.0)
+- [x] Sessions actives visibles dans heartbeat et `intercom_list_agents()` (v0.3.0)

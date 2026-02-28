@@ -2,6 +2,21 @@
 
 All notable changes to AI-Intercom are documented here.
 
+## [0.3.0] - 2026-02-28
+
+### Added
+- Interactive agent-to-agent chat via `intercom_chat()` and `intercom_reply()`
+- `intercom_check_inbox()` tool for manual inbox checking
+- Daemon session registration (register/unregister/deliver endpoints)
+- PostToolUse and UserPromptSubmit hooks for automatic message delivery
+- File-based inbox system (`~/.config/ai-intercom/inbox/`)
+- `check-inbox` CLI subcommand for hook integration
+- Session status endpoint (`/api/session/<id>/status`)
+- Enriched heartbeat with active session info
+- Enriched `intercom_list_agents()` showing active sessions
+- Chat messages visible in Telegram for human oversight
+- `MessageType.CHAT`, `SessionInfo`, `ThreadMessage` models
+
 ## [0.2.1] - 2026-02-28
 
 ### Added
