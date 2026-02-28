@@ -2,6 +2,18 @@
 
 All notable changes to AI-Intercom are documented here.
 
+## [0.2.1] - 2026-02-28
+
+### Added
+- **`/intercom` skill** -- Quick reference guide for all 8 MCP tools + SAV support channel for agents
+- **Feedback Telegram notifications** -- `POST /api/feedback` now sends instant Telegram notifications with type-based emoji (bug/improvement/note)
+- **Skill distribution endpoint** -- `GET /api/skill/intercom` serves the skill file for remote installation
+- **CLAUDE.md** -- Project context file for mission-launched agents
+
+### Changed
+- `install.sh` now downloads and installs the `/intercom` skill on target machines
+- Dockerfile includes `.claude/commands/` for skill distribution from container
+
 ## [0.2.0] - 2026-02-28
 
 ### Added

@@ -13,7 +13,8 @@ Chaque projet a un "maintainer" (par defaut = lui-meme). Quand un agent a un pro
 - Tool MCP `intercom_support(service, issue)` qui route vers le bon maintainer
 - Ex: probleme avec intercom → route vers `serverlab/ai-intercom`
 - Ex: probleme avec TTS → route vers `limn/jetson-thor`
-- Le tool `intercom_report_feedback` existant ecrit dans un JSONL ; le remplacer ou completer par du routing actif
+- ~~Le tool `intercom_report_feedback` existant ecrit dans un JSONL~~ → FAIT (v0.2.1) : feedback + notification Telegram
+- Reste : routing actif vers le maintainer agent au lieu de juste notifier l'humain
 
 ### 2. Conversation vocale via Telegram (STT + TTS via limn)
 Permettre une conversation vocale avec le dispatcher Telegram en utilisant les services STT et TTS heberges sur limn (Jetson Thor).
@@ -94,3 +95,5 @@ HMAC existe mais les tokens sont souvent vides.
 - [x] Join flow avec approbation Telegram
 - [x] Forum topics par mission
 - [x] Feedback granulaire des missions (stream-json, FeedbackItem, Telegram live updates)
+- [x] Skill `/intercom` (guide MCP + canal SAV) deploye sur serverlab, limn, vps
+- [x] Notification Telegram sur feedback agents (bug/improvement/note)
