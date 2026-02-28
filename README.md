@@ -21,7 +21,7 @@ A distributed inter-agent communication system that enables AI coding agents (Cl
  |  |  Approval     |       |             |       |                  |
  |  |  Engine       |       |             |  +----+----------+       |
  |  +------+--------+       |             |  |  MCP Server   |       |
- |  |  Registry     |       |             |  |  (7 tools)    |       |
+ |  |  Registry     |       |             |  |  (11 tools)    |       |
  |  |  (SQLite)     |       |             |  +---------------+       |
  |  +---------------+       |             |                          |
  +--------------------------+             +--------------------------+
@@ -45,7 +45,8 @@ A distributed inter-agent communication system that enables AI coding agents (Cl
 - **Telegram forum topics** -- Each mission gets its own forum topic for clean conversation threading
 - **HMAC-SHA256 authentication** -- Per-machine tokens with timestamp anti-replay protection
 - **Tailscale auto-discovery** -- Install script scans the Tailscale network to find the hub automatically
-- **MCP integration** -- Seven tools exposed via Model Context Protocol so any MCP-compatible agent can use the intercom
+- **Interactive agent-to-agent chat** -- Asynchronous bidirectional messaging between active Claude Code sessions across machines via inbox queues and PostToolUse hooks
+- **MCP integration** -- Eleven tools exposed via Model Context Protocol so any MCP-compatible agent can use the intercom
 - **Agent launcher** -- Start AI agents on remote machines with mission context and path restrictions
 - **Real-time mission feedback** -- Live streaming of agent activity (tools used, files read, commands run) via Telegram progress messages
 - **Policy engine** -- Glob/regex-based approval rules with runtime grants (mission-level, session-level)
@@ -121,6 +122,10 @@ Add to your agent's MCP configuration (e.g., `.mcp.json`):
 | `intercom_status` | Get the current status of a running mission. |
 | `intercom_history` | Retrieve the full conversation history of a mission. |
 | `intercom_register` | Update this agent's registry entry (description, capabilities, tags). |
+| `intercom_report_feedback` | Report bugs, suggestions, or questions to the human operator. |
+| `intercom_chat` | Send a message to an agent's active session. Creates a conversation thread. |
+| `intercom_reply` | Reply to a message in an existing conversation thread. |
+| `intercom_check_inbox` | Manually check for pending messages from other agents. |
 
 ## Configuration Reference
 
@@ -331,7 +336,7 @@ src/
     api.py            # FastAPI: health, status, message receive
     hub_client.py     # HTTP client for hub communication
     agent_launcher.py # Subprocess agent launcher with path validation and stream-json feedback
-    mcp_server.py     # FastMCP server exposing 7 intercom tools
+    mcp_server.py     # FastMCP server exposing 11 intercom tools
   cli.py              # CLI entry point (hub/daemon/standalone/mcp-server)
   main.py             # Module entry point
 

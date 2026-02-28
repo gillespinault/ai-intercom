@@ -17,6 +17,9 @@ description: AI-Intercom quick reference and support channel. Use when you need 
 | `intercom_history` | Get full conversation history of a mission | `intercom_history(mission_id="abc-123")` |
 | `intercom_register` | Update your agent's description/capabilities | `intercom_register(project={"description": "Memory agent"})` |
 | `intercom_report_feedback` | Report bugs, suggestions, or questions | `intercom_report_feedback(type="bug", description="...")` |
+| `intercom_chat` | Send a message to an active agent session | `intercom_chat(to="limn/mnemos", message="Tu as l'URL du endpoint?")` |
+| `intercom_reply` | Reply in an existing conversation thread | `intercom_reply(thread_id="t-abc123", message="Oui, c'est /api/feedback")` |
+| `intercom_check_inbox` | Check for pending messages from agents | `intercom_check_inbox()` |
 
 ## Common Patterns
 
@@ -70,6 +73,23 @@ intercom_report_feedback(type="bug", description="intercom_ask times out after 3
 intercom_report_feedback(type="improvement", description="Add batch send to multiple agents")
 intercom_report_feedback(type="note", description="How do I change my agent's display name?")
 ```
+
+### 6. Chat with an active agent session
+
+```
+# Check who has an active session
+agents = intercom_list_agents(filter="online")
+# Look for agents with "session" field set
+
+# Start a conversation
+result = intercom_chat(to="limn/mnemos", message="Hey, tu as les logs du dernier deploy?")
+thread_id = result["thread_id"]
+
+# Reply in the same thread
+intercom_reply(thread_id=thread_id, message="Merci, c'est bon!")
+```
+
+Messages arrive in the agent's inbox and are delivered automatically between tool calls via hooks. If you're told to "check your mail", use `intercom_check_inbox()`.
 
 ## Support Channel
 

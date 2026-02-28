@@ -7,7 +7,7 @@ AI-Intercom is a multi-machine agent communication system. It connects AI agents
 **Architecture:**
 - **Hub** (central, runs on main server): API server + Telegram bot + agent registry + mission router
 - **Daemon** (one per machine): registers with hub, launches agents, reports status
-- **MCP Server** (per agent session): exposes 8 intercom tools to Claude Code via MCP protocol
+- **MCP Server** (per agent session): exposes 11 intercom tools to Claude Code via MCP protocol
 
 ## Key Files
 
@@ -26,11 +26,11 @@ src/
 │   ├── main.py               # Daemon startup
 │   ├── api.py                # Daemon HTTP API (receive missions)
 │   ├── hub_client.py         # HTTP client for hub API calls
-│   ├── mcp_server.py         # MCP tool definitions (8 tools)
+│   ├── mcp_server.py         # MCP tool definitions (11 tools)
 │   └── agent_launcher.py     # Launches Claude/Codex agents for missions
 └── shared/
     ├── config.py             # Configuration model (YAML parsing)
-    ├── models.py             # Shared data models (Message, etc.)
+    ├── models.py             # Shared data models (Message, SessionInfo, ThreadMessage)
     └── auth.py               # Token-based auth
 ```
 
@@ -52,6 +52,9 @@ ai-intercom daemon --config ~/.config/ai-intercom/config.yml
 
 # Run MCP server (used by Claude Code)
 ai-intercom mcp-server --config ~/.config/ai-intercom/config.yml
+
+# Check inbox for pending chat messages (used by hooks)
+ai-intercom check-inbox --format hook
 ```
 
 ## When Launched as a Mission Agent
