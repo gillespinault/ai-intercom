@@ -179,6 +179,10 @@ class AgentLauncher:
         # Ensure stream-json is set if not already
         if "--output-format" not in args:
             args.extend(["--output-format", "stream-json"])
+        # stream-json with --print requires --verbose
+        if "-p" in args or "--print" in args:
+            if "--verbose" not in args:
+                args.append("--verbose")
 
         result = self._results.get(mission_id)
         final_output = ""
