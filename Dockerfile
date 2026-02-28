@@ -8,6 +8,7 @@ COPY src/ ./src/
 RUN pip install --no-cache-dir .
 
 COPY config/config.example.yml ./config/
+COPY .claude/commands/ ./.claude/commands/
 
 RUN mkdir -p /app/data
 
