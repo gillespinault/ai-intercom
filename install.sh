@@ -194,6 +194,36 @@ else
     echo "Start manually: ai-intercom daemon --config $CONFIG_DIR/config.yml"
 fi
 
+# --- Install /intercom skill for Claude Code ---
+echo ""
+echo "=== Installing /intercom skill ==="
+SKILL_DIR="${HOME}/.claude/commands"
+mkdir -p "$SKILL_DIR"
+
+if [ -n "$HUB_URL" ]; then
+    # Download skill from hub
+    SKILL_CONTENT=$(curl -sf "$HUB_URL/api/skill/intercom" 2>/dev/null || true)
+fi
+
+if [ -z "${SKILL_CONTENT:-}" ]; then
+    # Fallback: create minimal skill pointing to /intercom docs
+    SKILL_CONTENT='---
+name: intercom
+description: AI-Intercom quick reference and support channel.
+---
+
+# AI-Intercom - Quick Reference
+
+Run `intercom_list_agents(filter="online")` to discover agents.
+Run `intercom_ask(to="machine/project", message="your task")` to send a mission.
+Run `intercom_report_feedback(type="bug", description="...")` for support.
+
+Full docs: https://github.com/your-org/AI-intercom'
+fi
+
+echo "$SKILL_CONTENT" > "$SKILL_DIR/intercom.md"
+echo "Skill installed at $SKILL_DIR/intercom.md"
+
 # --- MCP configuration for Claude Code ---
 echo ""
 echo "=== MCP Setup for Claude Code ==="

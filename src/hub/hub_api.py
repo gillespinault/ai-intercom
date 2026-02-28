@@ -633,6 +633,28 @@ def create_hub_api(
         feedback_path.parent.mkdir(parents=True, exist_ok=True)
         with open(feedback_path, "a") as f:
             f.write(json.dumps(entry) + "\n")
+
+        # Notify via Telegram
+        if telegram_bot:
+            type_emoji = {"bug": "\U0001f41b", "improvement": "\U0001f4a1", "note": "\U0001f4ac"}.get(
+                entry["type"], "\U0001f4ac"
+            )
+            tg_text = (
+                f"{type_emoji} *Feedback* ({entry['type']})\n\n"
+                f"*From:* `{entry['from_agent']}`\n"
+                f"{entry['description']}"
+            )
+            if entry["context"]:
+                tg_text += f"\n\n*Context:* {entry['context']}"
+            try:
+                await telegram_bot.app.bot.send_message(
+                    chat_id=telegram_bot.supergroup_id,
+                    text=tg_text,
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                logger.warning("Failed to send feedback to Telegram: %s", e)
+
         return {"status": "stored", "timestamp": entry["timestamp"]}
 
     @app.get("/api/feedback")
@@ -644,5 +666,15 @@ def create_hub_api(
         lines = feedback_path.read_text().strip().split("\n")
         entries = [json.loads(line) for line in lines[-limit:] if line.strip()]
         return {"feedback": entries}
+
+    # --- Skill distribution ---
+
+    @app.get("/api/skill/intercom")
+    async def get_intercom_skill():
+        """Serve the /intercom skill file for remote installation."""
+        skill_path = Path(__file__).parent.parent.parent / ".claude" / "commands" / "intercom.md"
+        if not skill_path.exists():
+            return Response(content="Skill not found", status_code=404)
+        return Response(content=skill_path.read_text(), media_type="text/markdown")
 
     return app
