@@ -83,6 +83,49 @@ def main() -> None:
         current_project = _detect_current_project(config)
 
         tools = IntercomTools(client, config.machine_id, current_project)
+
+        # --- Session registration with local daemon ---
+        import uuid as _uuid
+        import atexit
+        from datetime import datetime, timezone
+        from pathlib import Path
+        import httpx
+
+        session_id = f"s-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{_uuid.uuid4().hex[:6]}"
+        inbox_dir = Path(os.path.expanduser("~/.config/ai-intercom/inbox"))
+        inbox_dir.mkdir(parents=True, exist_ok=True)
+        inbox_path = str(inbox_dir / f"{session_id}.jsonl")
+
+        tools._inbox_path = inbox_path
+        tools._session_id = session_id
+
+        # Register with local daemon (best-effort)
+        daemon_port = config.hub.get("daemon_port", 7700)
+        _reg_data = {
+            "session_id": session_id,
+            "project": current_project,
+            "pid": os.getpid(),
+            "inbox_path": inbox_path,
+        }
+
+        try:
+            with httpx.Client(timeout=5) as http:
+                http.post(f"http://localhost:{daemon_port}/api/session/register", json=_reg_data)
+        except Exception:
+            pass  # Daemon might not be running
+
+        def _cleanup():
+            try:
+                with httpx.Client(timeout=2) as http:
+                    http.post(
+                        f"http://localhost:{daemon_port}/api/session/unregister",
+                        json={"session_id": session_id},
+                    )
+            except Exception:
+                pass
+
+        atexit.register(_cleanup)
+
         mcp = create_mcp_server(tools)
         mcp.run()
     elif args.command in ("hub", "daemon", "standalone"):
