@@ -13,6 +13,7 @@ class MessageType(StrEnum):
     RESPONSE = "response"
     START_AGENT = "start_agent"
     STATUS = "status"
+    CHAT = "chat"
 
 
 class AgentStatus(StrEnum):
@@ -85,3 +86,24 @@ class MachineInfo(BaseModel):
     status: AgentStatus = AgentStatus.UNKNOWN
     last_seen: str | None = None
     projects: list[AgentInfo] = Field(default_factory=list)
+
+
+class SessionInfo(BaseModel):
+    """Represents an active Claude Code session on a daemon."""
+    session_id: str
+    project: str
+    pid: int
+    inbox_path: str
+    registered_at: str = ""
+    status: str = "active"
+    summary: str = ""
+    recent_activity: list[str] = Field(default_factory=list)
+
+
+class ThreadMessage(BaseModel):
+    """A single message in an inter-agent chat thread."""
+    thread_id: str
+    from_agent: str
+    timestamp: str
+    message: str
+    read: bool = False

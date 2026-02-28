@@ -1,6 +1,7 @@
 import pytest
 from src.shared.models import (
     AgentId, Message, MessageType, AgentInfo, AgentStatus, MachineInfo,
+    SessionInfo, ThreadMessage,
 )
 
 
@@ -98,3 +99,36 @@ def test_message_type_values():
     assert MessageType.RESPONSE == "response"
     assert MessageType.START_AGENT == "start_agent"
     assert MessageType.STATUS == "status"
+
+
+def test_message_type_chat():
+    assert MessageType.CHAT == "chat"
+
+
+def test_session_info_defaults():
+    s = SessionInfo(session_id="s-123", project="myproj", pid=999, inbox_path="/tmp/inbox.jsonl")
+    assert s.status == "active"
+    assert s.summary == ""
+    assert s.recent_activity == []
+    assert s.registered_at == ""
+
+
+def test_thread_message_defaults():
+    m = ThreadMessage(
+        thread_id="t-abc",
+        from_agent="limn/mnemos",
+        timestamp="2026-02-28T16:00:00Z",
+        message="hello",
+    )
+    assert m.read is False
+
+
+def test_thread_message_read():
+    m = ThreadMessage(
+        thread_id="t-abc",
+        from_agent="limn/mnemos",
+        timestamp="2026-02-28T16:00:00Z",
+        message="hello",
+        read=True,
+    )
+    assert m.read is True
