@@ -243,33 +243,60 @@ async def run_hub(config: IntercomConfig) -> None:
             daemon_url = machine["daemon_url"]
             poll_timeout = 300  # 5 minutes max
             poll_interval = 5
-            progress_interval = 15  # Update Telegram message every 15s
+            fallback_interval = 15  # Fallback progress if no feedback for 15s
             elapsed = 0
-            last_progress_update = 0
+            feedback_cursor = 0
+            last_feedback_time = time.monotonic()
+            last_posted_summary = ""
 
             while elapsed < poll_timeout:
                 await asyncio.sleep(poll_interval)
                 elapsed += poll_interval
 
-                # Update progress message periodically
-                if elapsed - last_progress_update >= progress_interval:
-                    last_progress_update = elapsed
-                    elapsed_str = _format_elapsed(elapsed)
-                    try:
-                        await thinking_msg.edit_text(
-                            f"\U0001f680 *Mission* \u2192 `{target}`\n"
-                            f"\u2699\ufe0f _Agent en cours..._ ({elapsed_str})",
-                            parse_mode="Markdown",
-                        )
-                    except Exception:
-                        pass  # Telegram rate limit or same content
-
                 try:
                     async with httpx.AsyncClient(timeout=10) as poll_client:
                         resp = await poll_client.get(
-                            f"{daemon_url}/api/missions/{resp_mission_id}"
+                            f"{daemon_url}/api/missions/{resp_mission_id}",
+                            params={"feedback_since": feedback_cursor},
                         )
                         status_data = resp.json()
+
+                        # Process feedback
+                        new_feedback = status_data.get("feedback", [])
+                        turn_count = status_data.get("turn_count", 0)
+                        if new_feedback:
+                            feedback_cursor = status_data.get("feedback_total", feedback_cursor)
+                            last_feedback_time = time.monotonic()
+                            unique = []
+                            for fb in new_feedback:
+                                s = fb.get("summary", "")
+                                if s != last_posted_summary:
+                                    unique.append(s)
+                                    last_posted_summary = s
+                            if unique:
+                                elapsed_str = _format_elapsed(elapsed)
+                                activities = "\n".join(unique[-5:])
+                                try:
+                                    await thinking_msg.edit_text(
+                                        f"\U0001f680 *Mission* \u2192 `{target}`\n"
+                                        f"{activities}\n"
+                                        f"_({elapsed_str} \u2022 tour {turn_count})_",
+                                        parse_mode="Markdown",
+                                    )
+                                except Exception:
+                                    pass
+                        elif time.monotonic() - last_feedback_time >= fallback_interval:
+                            last_feedback_time = time.monotonic()
+                            elapsed_str = _format_elapsed(elapsed)
+                            try:
+                                await thinking_msg.edit_text(
+                                    f"\U0001f680 *Mission* \u2192 `{target}`\n"
+                                    f"\u2699\ufe0f _Agent en cours..._ ({elapsed_str})",
+                                    parse_mode="Markdown",
+                                )
+                            except Exception:
+                                pass
+
                         if status_data.get("status") in ("completed", "failed"):
                             result = status_data
                             break

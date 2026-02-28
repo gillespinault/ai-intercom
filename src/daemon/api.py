@@ -84,7 +84,7 @@ def create_app(machine_id: str, token: str) -> FastAPI:
         return {"status": "received", "mission_id": mission_id}
 
     @app.get("/api/missions/{mission_id}")
-    async def mission_status(mission_id: str):
+    async def mission_status(mission_id: str, feedback_since: int = 0):
         """Get the status of a mission running on this daemon."""
         if not app.state.launcher:
             return Response(status_code=404, content="No launcher configured")
@@ -97,6 +97,12 @@ def create_app(machine_id: str, token: str) -> FastAPI:
             "output": result.output,
             "started_at": result.started_at,
             "finished_at": result.finished_at,
+            "feedback": [
+                {"timestamp": f.timestamp, "kind": f.kind, "summary": f.summary}
+                for f in result.feedback[feedback_since:]
+            ],
+            "feedback_total": len(result.feedback),
+            "turn_count": result.turn_count,
         }
 
     return app

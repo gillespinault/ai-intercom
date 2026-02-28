@@ -326,9 +326,11 @@ def create_hub_api(
         t0 = time.monotonic()
         poll_timeout = 600  # 10 minutes max for inter-agent missions
         poll_interval = 10
-        progress_interval = 60  # Post progress update every 60s
+        fallback_interval = 60  # Generic progress if no feedback for 60s
         elapsed = 0
-        last_progress = 0
+        feedback_cursor = 0
+        last_feedback_time = time.monotonic()
+        last_posted_summary = ""
 
         # Post initial tracking message
         await telegram_bot.post_text_to_mission(
@@ -343,19 +345,11 @@ def create_hub_api(
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
 
-            # Periodic progress update
-            if elapsed - last_progress >= progress_interval:
-                last_progress = elapsed
-                elapsed_str = _format_elapsed(elapsed)
-                await telegram_bot.post_text_to_mission(
-                    mission_id,
-                    f"\u2699\ufe0f _Agent en cours..._ ({elapsed_str})",
-                )
-
             try:
                 async with httpx.AsyncClient(timeout=10) as client:
                     resp = await client.get(
-                        f"{daemon_url}/api/missions/{mission_id}"
+                        f"{daemon_url}/api/missions/{mission_id}",
+                        params={"feedback_since": feedback_cursor},
                     )
 
                     # Handle 404: mission not found on daemon
@@ -385,6 +379,36 @@ def create_hub_api(
                             mission_id, resp.status_code,
                         )
                         continue
+
+                    # Process new feedback items
+                    new_feedback = status_data.get("feedback", [])
+                    turn_count = status_data.get("turn_count", 0)
+                    if new_feedback:
+                        feedback_cursor = status_data.get("feedback_total", feedback_cursor)
+                        last_feedback_time = time.monotonic()
+                        # Deduplicate consecutive identical summaries
+                        unique = []
+                        for fb in new_feedback:
+                            s = fb.get("summary", "")
+                            if s != last_posted_summary:
+                                unique.append(s)
+                                last_posted_summary = s
+                        if unique:
+                            # Post last 5 activities + elapsed + turn count
+                            elapsed_str = _format_elapsed(elapsed)
+                            activities = "\n".join(unique[-5:])
+                            await telegram_bot.post_text_to_mission(
+                                mission_id,
+                                f"{activities}\n_({elapsed_str} \u2022 tour {turn_count})_",
+                            )
+                    elif time.monotonic() - last_feedback_time >= fallback_interval:
+                        # Fallback: no feedback for a while
+                        last_feedback_time = time.monotonic()
+                        elapsed_str = _format_elapsed(elapsed)
+                        await telegram_bot.post_text_to_mission(
+                            mission_id,
+                            f"\u2699\ufe0f _Agent en cours..._ ({elapsed_str})",
+                        )
 
                     if status_data.get("status") in ("completed", "failed"):
                         total = _format_elapsed(int(time.monotonic() - t0))
@@ -547,6 +571,12 @@ def create_hub_api(
                     "output": result.output,
                     "started_at": result.started_at,
                     "finished_at": result.finished_at,
+                    "feedback": [
+                        {"timestamp": f.timestamp, "kind": f.kind, "summary": f.summary}
+                        for f in result.feedback
+                    ],
+                    "feedback_total": len(result.feedback),
+                    "turn_count": result.turn_count,
                 }
 
         # Look up mission in store to find target machine

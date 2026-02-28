@@ -1,7 +1,13 @@
 import asyncio
+import json
 
 import pytest
-from src.daemon.agent_launcher import AgentLauncher, MissionResult
+from src.daemon.agent_launcher import (
+    AgentLauncher,
+    FeedbackItem,
+    MissionResult,
+    _summarize_tool_input,
+)
 
 
 @pytest.fixture
@@ -132,3 +138,154 @@ async def test_stop_running_process():
     result = launcher.get_status("bg-stop")
     assert result is not None
     assert result.status == "failed"
+
+
+# --- Streaming feedback tests ---
+
+
+def test_feedback_item_creation():
+    """FeedbackItem should store timestamp, kind, and summary."""
+    fb = FeedbackItem(timestamp="2026-02-28T09:00:00Z", kind="tool", summary="\U0001f4d6 Lecture de config.py")
+    assert fb.kind == "tool"
+    assert "\U0001f4d6" in fb.summary
+    assert fb.timestamp == "2026-02-28T09:00:00Z"
+
+
+def test_mission_result_with_feedback():
+    """MissionResult should have empty feedback list and zero turn_count by default."""
+    result = MissionResult()
+    assert result.feedback == []
+    assert result.turn_count == 0
+
+
+def test_mission_result_defaults_preserved():
+    """Existing defaults should still work with new fields."""
+    result = MissionResult()
+    assert result.status == "running"
+    assert result.output is None
+    assert result.finished_at is None
+    assert result.feedback == []
+    assert result.turn_count == 0
+
+
+def test_process_stream_line_tool_use():
+    """_process_stream_line should create FeedbackItem for tool_use blocks."""
+    launcher = AgentLauncher("echo", [], ["/tmp"], 10)
+    mission_id = "stream-001"
+    launcher._results[mission_id] = MissionResult(started_at="now")
+
+    event = {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "Read",
+                    "input": {"file_path": "/home/gilles/serverlab/src/config.py"},
+                }
+            ]
+        },
+    }
+    result = launcher._process_stream_line(json.dumps(event), mission_id)
+    assert result is None  # Not a result event
+
+    mr = launcher._results[mission_id]
+    assert len(mr.feedback) == 1
+    assert mr.feedback[0].kind == "tool"
+    assert "\U0001f4d6" in mr.feedback[0].summary
+    assert "src/config.py" in mr.feedback[0].summary
+    assert mr.turn_count == 1
+
+
+def test_process_stream_line_text():
+    """_process_stream_line should create FeedbackItem for long text blocks."""
+    launcher = AgentLauncher("echo", [], ["/tmp"], 10)
+    mission_id = "stream-002"
+    launcher._results[mission_id] = MissionResult(started_at="now")
+
+    event = {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "text", "text": "This is a long response with detailed explanation of the changes made."}
+            ]
+        },
+    }
+    launcher._process_stream_line(json.dumps(event), mission_id)
+
+    mr = launcher._results[mission_id]
+    assert len(mr.feedback) == 1
+    assert mr.feedback[0].kind == "text"
+    assert "\U0001f4ac" in mr.feedback[0].summary
+
+
+def test_process_stream_line_short_text_ignored():
+    """Short text blocks (<= 20 chars) should not create feedback."""
+    launcher = AgentLauncher("echo", [], ["/tmp"], 10)
+    mission_id = "stream-003"
+    launcher._results[mission_id] = MissionResult(started_at="now")
+
+    event = {
+        "type": "assistant",
+        "message": {"content": [{"type": "text", "text": "OK"}]},
+    }
+    launcher._process_stream_line(json.dumps(event), mission_id)
+
+    mr = launcher._results[mission_id]
+    # turn_count incremented but no feedback for short text
+    assert mr.turn_count == 1
+    assert len(mr.feedback) == 0
+
+
+def test_process_stream_line_invalid_json():
+    """Invalid JSON lines should be silently ignored."""
+    launcher = AgentLauncher("echo", [], ["/tmp"], 10)
+    mission_id = "stream-004"
+    launcher._results[mission_id] = MissionResult(started_at="now")
+
+    result = launcher._process_stream_line("not valid json {{{", mission_id)
+    assert result is None
+    assert len(launcher._results[mission_id].feedback) == 0
+
+
+def test_process_stream_line_result():
+    """Result events should return the final output text."""
+    launcher = AgentLauncher("echo", [], ["/tmp"], 10)
+    mission_id = "stream-005"
+    launcher._results[mission_id] = MissionResult(started_at="now")
+
+    event = {"type": "result", "result": "All tasks completed successfully."}
+    output = launcher._process_stream_line(json.dumps(event), mission_id)
+    assert output == "All tasks completed successfully."
+
+
+def test_summarize_tool_input_read():
+    """_summarize_tool_input should extract last 2 path segments for Read."""
+    result = _summarize_tool_input("Read", {"file_path": "/home/gilles/serverlab/src/config.py"})
+    assert result == "src/config.py"
+
+
+def test_summarize_tool_input_bash():
+    """_summarize_tool_input should truncate long bash commands."""
+    cmd = "docker compose -f /home/gilles/serverlab/services/docker-compose.yml up -d --build --no-cache"
+    result = _summarize_tool_input("Bash", {"command": cmd})
+    assert len(result) <= 83  # 80 + "..."
+    assert result.startswith("docker compose")
+
+
+def test_summarize_tool_input_grep():
+    """_summarize_tool_input should return pattern for Grep."""
+    result = _summarize_tool_input("Grep", {"pattern": "def main"})
+    assert result == "def main"
+
+
+def test_summarize_tool_input_agent():
+    """_summarize_tool_input should return description for Agent."""
+    result = _summarize_tool_input("Agent", {"description": "Explore codebase"})
+    assert result == "Explore codebase"
+
+
+def test_summarize_tool_input_unknown():
+    """Unknown tools should return empty string."""
+    result = _summarize_tool_input("UnknownTool", {"foo": "bar"})
+    assert result == ""
