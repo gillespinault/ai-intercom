@@ -1,3 +1,7 @@
+import json
+import os
+import tempfile
+
 import pytest
 from unittest.mock import AsyncMock
 from src.daemon.mcp_server import IntercomTools
@@ -85,3 +89,101 @@ async def test_daemon_status(tools):
     }
     result = await tools.daemon_status(mission_id="m-001")
     assert result["status"] == "running"
+
+
+class FakeHubClientChat:
+    """Fake hub client that handles chat operations."""
+
+    def __init__(self):
+        self.last_route = None
+
+    async def list_agents(self, filter="all"):
+        return []
+
+    async def route_chat(self, from_agent, to, message):
+        self.last_route = {"from": from_agent, "to": to, "message": message}
+        return {"status": "delivered", "thread_id": "t-new123"}
+
+    async def route_reply(self, from_agent, thread_id, message):
+        self.last_route = {
+            "from": from_agent,
+            "thread_id": thread_id,
+            "message": message,
+        }
+        return {"status": "delivered", "thread_id": thread_id}
+
+
+@pytest.fixture
+def chat_tools():
+    client = FakeHubClientChat()
+    tools = IntercomTools(client, "serverlab", "ai-intercom")
+    return tools, client
+
+
+@pytest.mark.asyncio
+async def test_chat_sends_via_hub(chat_tools):
+    tools, client = chat_tools
+    result = await tools.chat(to="limn/mnemos", message="hello")
+    assert result["status"] == "delivered"
+    assert client.last_route["to"] == "limn/mnemos"
+
+
+@pytest.mark.asyncio
+async def test_reply_sends_via_hub(chat_tools):
+    tools, client = chat_tools
+    result = await tools.reply(thread_id="t-abc", message="world")
+    assert result["status"] == "delivered"
+    assert client.last_route["thread_id"] == "t-abc"
+
+
+@pytest.mark.asyncio
+async def test_check_inbox_empty(chat_tools):
+    tools, _ = chat_tools
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        inbox_path = f.name
+    try:
+        tools._inbox_path = inbox_path
+        result = await tools.check_inbox()
+        assert result["count"] == 0
+        assert result["messages"] == []
+    finally:
+        os.unlink(inbox_path)
+
+
+@pytest.mark.asyncio
+async def test_check_inbox_with_messages(chat_tools):
+    tools, _ = chat_tools
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        f.write(
+            json.dumps(
+                {
+                    "thread_id": "t-abc",
+                    "from_agent": "limn/mnemos",
+                    "timestamp": "2026-02-28T16:00:00Z",
+                    "message": "hello",
+                    "read": False,
+                }
+            )
+            + "\n"
+        )
+        inbox_path = f.name
+    try:
+        tools._inbox_path = inbox_path
+        result = await tools.check_inbox()
+        assert result["count"] == 1
+        assert result["messages"][0]["message"] == "hello"
+
+        # Verify message marked as read
+        with open(inbox_path) as f:
+            data = json.loads(f.readline())
+        assert data["read"] is True
+    finally:
+        os.unlink(inbox_path)
+
+
+@pytest.mark.asyncio
+async def test_check_inbox_no_path(chat_tools):
+    tools, _ = chat_tools
+    # _inbox_path is None by default
+    result = await tools.check_inbox()
+    assert result["count"] == 0

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -15,6 +17,8 @@ class IntercomTools:
         self.hub_client = hub_client
         self.machine_id = machine_id
         self.current_project = current_project
+        self._inbox_path: str | None = None
+        self._session_id: str | None = None
 
     @property
     def from_agent(self) -> str:
@@ -104,6 +108,53 @@ class IntercomTools:
             description=description,
             context=context,
         )
+
+    async def chat(self, to: str, message: str) -> dict:
+        return await self.hub_client.route_chat(
+            from_agent=self.from_agent,
+            to=to,
+            message=message,
+        )
+
+    async def reply(self, thread_id: str, message: str) -> dict:
+        return await self.hub_client.route_reply(
+            from_agent=self.from_agent,
+            thread_id=thread_id,
+            message=message,
+        )
+
+    async def check_inbox(self) -> dict:
+        if not self._inbox_path:
+            return {"messages": [], "count": 0}
+        inbox = Path(self._inbox_path)
+        if not inbox.exists():
+            return {"messages": [], "count": 0}
+
+        lines = inbox.read_text().strip().split("\n")
+        unread = []
+        all_messages = []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                msg = json.loads(line)
+                if not msg.get("read"):
+                    unread.append(msg)
+                    msg["read"] = True
+                all_messages.append(msg)
+            except json.JSONDecodeError:
+                all_messages.append(line)
+
+        # Rewrite file with read markers
+        if unread:
+            with open(inbox, "w") as f:
+                for msg in all_messages:
+                    if isinstance(msg, dict):
+                        f.write(json.dumps(msg) + "\n")
+                    else:
+                        f.write(msg + "\n")
+
+        return {"messages": unread, "count": len(unread)}
 
 
 def create_mcp_server(tools: IntercomTools) -> FastMCP:
@@ -236,5 +287,41 @@ def create_mcp_server(tools: IntercomTools) -> FastMCP:
         return await tools.report_feedback(
             feedback_type=type, description=description, context=context
         )
+
+    @mcp.tool()
+    async def intercom_chat(to: str, message: str) -> dict:
+        """Send a message to an agent's active session. Creates a conversation thread.
+
+        Use intercom_list_agents() first to check if the target has an active session.
+        If no active session exists, you'll get status "no_active_session" — use
+        intercom_ask() instead to launch a new agent.
+
+        Args:
+            to: Target agent ID (machine/project).
+            message: The message to send.
+        """
+        return await tools.chat(to=to, message=message)
+
+    @mcp.tool()
+    async def intercom_reply(thread_id: str, message: str) -> dict:
+        """Reply to a message in an existing conversation thread.
+
+        Use the thread_id from a received message (shown in inbox notifications).
+
+        Args:
+            thread_id: The thread ID to reply in.
+            message: Your reply message.
+        """
+        return await tools.reply(thread_id=thread_id, message=message)
+
+    @mcp.tool()
+    async def intercom_check_inbox() -> dict:
+        """Check for pending messages from other agents.
+
+        Messages arrive automatically via hooks between tool calls, but you can
+        also check manually with this tool (e.g. when asked to "check your mail").
+        Returns unread messages and marks them as read.
+        """
+        return await tools.check_inbox()
 
     return mcp
