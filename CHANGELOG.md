@@ -16,6 +16,11 @@ All notable changes to AI-Intercom are documented here.
 - Enriched `intercom_list_agents()` showing active sessions
 - Chat messages visible in Telegram for human oversight
 - `MessageType.CHAT`, `SessionInfo`, `ThreadMessage` models
+- MCP server definition added to `~/.mcp.json` global config
+
+### Fixed (0.3.1 - 2026-03-01)
+- `check-inbox` CLI crash: redundant `import os` in `cli.py` if/elif branches caused `UnboundLocalError` (Python treats `os` as local in entire function scope)
+- Hardcoded version `"0.1.0"` in daemon and hub `/api/discover` endpoints replaced with dynamic `importlib.metadata.version("ai-intercom")`
 
 ## [0.2.1] - 2026-02-28
 

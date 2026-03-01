@@ -236,8 +236,30 @@ MCP_CONFIG='{
   }
 }'
 
-echo "Add this to your project's .mcp.json to enable intercom tools:"
-echo "$MCP_CONFIG" | python3 -m json.tool 2>/dev/null || echo "$MCP_CONFIG"
+# Auto-add to ~/.mcp.json
+MCP_FILE="${HOME}/.mcp.json"
+if [ -f "$MCP_FILE" ]; then
+    if grep -q "ai-intercom" "$MCP_FILE" 2>/dev/null; then
+        echo "ai-intercom already in $MCP_FILE (skipping)"
+    else
+        python3 -c "
+import json
+with open('$MCP_FILE') as f:
+    data = json.load(f)
+data.setdefault('mcpServers', {})['ai-intercom'] = {
+    'command': '$AI_INTERCOM_BIN',
+    'args': ['mcp-server', '--config', '$CONFIG_DIR/config.yml']
+}
+with open('$MCP_FILE', 'w') as f:
+    json.dump(data, f, indent=2)
+print('Added ai-intercom to ' + '$MCP_FILE')
+"
+    fi
+else
+    echo "$MCP_CONFIG" > "$MCP_FILE"
+    echo "Created $MCP_FILE with ai-intercom MCP server"
+fi
+
 # --- Hook setup for interactive chat ---
 echo ""
 echo "=== Setting up chat hooks ==="
