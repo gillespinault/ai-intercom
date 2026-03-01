@@ -15,6 +15,14 @@ from src.shared.auth import normalize_headers, verify_request
 logger = logging.getLogger(__name__)
 
 
+def _get_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("ai-intercom")
+    except Exception:
+        return "unknown"
+
+
 def create_app(machine_id: str, token: str) -> FastAPI:
     """Create the daemon FastAPI application."""
     app = FastAPI(title=f"AI-Intercom Daemon ({machine_id})")
@@ -37,7 +45,7 @@ def create_app(machine_id: str, token: str) -> FastAPI:
         return {
             "hub": False,
             "machine_id": machine_id,
-            "version": "0.1.0",
+            "version": _get_version(),
         }
 
     @app.get("/api/status")

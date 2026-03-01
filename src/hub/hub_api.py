@@ -68,7 +68,12 @@ def create_hub_api(
 
     @app.get("/api/discover")
     async def discover():
-        return {"hub": True, "name": "AI-Intercom Hub", "version": "0.1.0"}
+        try:
+            from importlib.metadata import version as _v
+            ver = _v("ai-intercom")
+        except Exception:
+            ver = "unknown"
+        return {"hub": True, "name": "AI-Intercom Hub", "version": ver}
 
     # --- Join flow ---
 

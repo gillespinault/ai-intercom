@@ -15,7 +15,6 @@ def _detect_current_project(config) -> str:
     .claude/ markers.  If a match is found among discovered projects, return
     that project ID.  Otherwise return "home" (general admin agent).
     """
-    import os
     from pathlib import Path
 
     cwd = Path(os.getcwd()).resolve()
@@ -80,7 +79,6 @@ def main() -> None:
         from src.daemon.mcp_server import create_mcp_server, IntercomTools
         from src.daemon.hub_client import HubClient
         from src.shared.config import load_config
-        import os
 
         config = load_config(os.path.expanduser(args.config))
         client = HubClient(config.hub.get("url", ""), config.auth.get("token", ""), config.machine_id)
@@ -136,7 +134,6 @@ def main() -> None:
         mcp.run()
     elif args.command in ("hub", "daemon", "standalone"):
         from src.shared.config import load_config
-        import os
 
         config = load_config(os.path.expanduser(args.config))
         if args.command == "standalone":
