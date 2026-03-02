@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS machines (
     daemon_url TEXT NOT NULL DEFAULT '',
     token TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'unknown',
+    version TEXT NOT NULL DEFAULT '',
     last_seen TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 )
@@ -59,7 +60,18 @@ class Registry:
         await self._db.execute("PRAGMA foreign_keys=ON")
         await self._db.execute(_CREATE_MACHINES)
         await self._db.execute(_CREATE_PROJECTS)
+        await self._migrate()
         await self._db.commit()
+
+    async def _migrate(self) -> None:
+        """Run schema migrations for existing databases."""
+        db = self._ensure_db()
+        async with db.execute("PRAGMA table_info(machines)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        if "version" not in columns:
+            await db.execute(
+                "ALTER TABLE machines ADD COLUMN version TEXT NOT NULL DEFAULT ''"
+            )
 
     async def close(self) -> None:
         """Close database connection."""
@@ -140,15 +152,24 @@ class Registry:
         await db.commit()
 
     async def update_heartbeat(
-        self, machine_id: str, active_agents: list[str] | None = None
+        self,
+        machine_id: str,
+        active_agents: list[str] | None = None,
+        version: str = "",
     ) -> None:
         """Update machine heartbeat: set last_seen to now and status to online."""
         db = self._ensure_db()
         now = datetime.now(timezone.utc).isoformat()
-        await db.execute(
-            "UPDATE machines SET last_seen = ?, status = 'online' WHERE id = ?",
-            (now, machine_id),
-        )
+        if version:
+            await db.execute(
+                "UPDATE machines SET last_seen = ?, status = 'online', version = ? WHERE id = ?",
+                (now, version, machine_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE machines SET last_seen = ?, status = 'online' WHERE id = ?",
+                (now, machine_id),
+            )
         await db.commit()
 
     async def list_agents(
@@ -173,7 +194,8 @@ class Registry:
                 m.display_name AS machine_name,
                 m.status AS machine_status,
                 m.tailscale_ip,
-                m.daemon_url
+                m.daemon_url,
+                m.version AS machine_version
             FROM projects p
             JOIN machines m ON p.machine_id = m.id
         """

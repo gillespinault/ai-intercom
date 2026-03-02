@@ -69,6 +69,11 @@ def main() -> None:
     mcp_parser = sub.add_parser("mcp-server", help="Run MCP server for local agents")
     mcp_parser.add_argument("--config", default="~/.config/ai-intercom/config.yml")
 
+    # Self-upgrade
+    upgrade_parser = sub.add_parser("self-upgrade", help="Upgrade ai-intercom on this machine")
+    upgrade_parser.add_argument("--detect-only", action="store_true", help="Only detect install info")
+    upgrade_parser.add_argument("--version", default="", help="Target version to upgrade to")
+
     # Check inbox (hook)
     inbox_parser = sub.add_parser("check-inbox", help="Check inbox for pending messages")
     inbox_parser.add_argument("--format", choices=["hook", "json"], default="hook")
@@ -149,6 +154,16 @@ def main() -> None:
         else:
             from src.daemon.main import run_daemon
             asyncio.run(run_daemon(config))
+    elif args.command == "self-upgrade":
+        from src.daemon.upgrade import load_install_info, run_self_upgrade, save_install_info
+
+        if args.detect_only:
+            info = load_install_info()
+            print(json.dumps(info, indent=2))
+        else:
+            print("Starting self-upgrade...")
+            result = run_self_upgrade(target_version=args.version)
+            print(json.dumps(result, indent=2))
     elif args.command == "check-inbox":
         import glob
 

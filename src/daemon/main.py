@@ -154,6 +154,15 @@ def _discover_projects(scan_paths: list[str]) -> list[dict]:
     return projects
 
 
+def _get_version() -> str:
+    """Get the installed ai-intercom version."""
+    try:
+        from importlib.metadata import version
+        return version("ai-intercom")
+    except Exception:
+        return "unknown"
+
+
 async def _register_with_hub(hub_url: str, config: IntercomConfig, token: str, ip_override: str = "") -> None:
     import httpx
     import json
@@ -184,6 +193,7 @@ async def _register_with_hub(hub_url: str, config: IntercomConfig, token: str, i
         "tailscale_ip": tailscale_ip,
         "daemon_url": daemon_url,
         "projects": projects,
+        "version": _get_version(),
     }).encode()
 
     headers = sign_request(body, config.machine_id, token)
@@ -224,6 +234,7 @@ async def _heartbeat_loop(hub_url: str, machine_id: str, token: str, daemon_port
                 "tailscale_ip": tailscale_ip,
                 "daemon_url": daemon_url,
                 "active_sessions": active_sessions,
+                "version": _get_version(),
             }).encode()
             headers = sign_request(body, machine_id, token)
             headers["Content-Type"] = "application/json"

@@ -114,3 +114,35 @@ All feedback is:
 1. Stored in the hub's feedback log
 2. Sent as a Telegram notification to the human operator
 3. Reviewed and actioned by the AI-intercom maintainer
+
+## Decision Tree: chat vs ask vs send
+
+Use this to pick the right tool:
+
+```
+Need to communicate with another agent?
+│
+├─ Just notify, no response needed?
+│  └─ intercom_send(to, message)
+│
+├─ Need a response / task executed?
+│  │
+│  ├─ Target has an active session? (check intercom_list_agents, look for "session" field)
+│  │  └─ intercom_chat(to, message)
+│  │     └─ Got "no_active_session"?
+│  │        └─ Use intercom_ask() instead (launches a new agent)
+│  │
+│  └─ No active session / don't know?
+│     └─ intercom_ask(to, message)
+│        └─ Returns mission_id → poll with intercom_status(mission_id)
+│
+└─ Reply to a received message?
+   └─ intercom_reply(thread_id, message)
+```
+
+**Key differences:**
+- `chat` = talks to an *existing* session (lightweight, conversational)
+- `ask` = *launches a new agent* for a mission (heavier, returns mission_id)
+- `send` = fire-and-forget (no response expected)
+
+**When chat fails:** If `intercom_chat` returns `"no_active_session"`, the target has no running Claude Code session. Use `intercom_ask` instead — it will launch one.

@@ -208,6 +208,15 @@ class HubClient:
         }
         return await self._post("/api/attention/event", data)
 
+    async def trigger_upgrade(
+        self, target: str = "all", version: str = ""
+    ) -> dict:
+        """Trigger network upgrade via Hub."""
+        return await self._post("/api/upgrade", {
+            "target": target,
+            "version": version,
+        }, timeout=180)
+
     async def register(
         self,
         machine_id: str,

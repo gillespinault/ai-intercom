@@ -54,6 +54,16 @@ async def test_heartbeat(client, registry):
     assert resp.status_code == 200
 
 
+async def test_heartbeat_with_version(client, registry):
+    await registry.register_machine("vps", "VPS", "1.2.3.4", "http://1.2.3.4:7700", "tok")
+    body = json.dumps({"machine_id": "vps", "version": "0.4.0"}).encode()
+    headers = sign_request(body, "vps", "tok")
+    resp = await client.post("/api/heartbeat", content=body, headers=headers)
+    assert resp.status_code == 200
+    machine = await registry.get_machine("vps")
+    assert machine["version"] == "0.4.0"
+
+
 # --- Chat routing tests ---
 
 

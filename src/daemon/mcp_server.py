@@ -123,6 +123,11 @@ class IntercomTools:
             message=message,
         )
 
+    async def upgrade_network(
+        self, target: str = "all", version: str = ""
+    ) -> dict:
+        return await self.hub_client.trigger_upgrade(target=target, version=version)
+
     async def check_inbox(self) -> dict:
         if not self._inbox_path:
             return {"messages": [], "count": 0}
@@ -316,6 +321,19 @@ def create_mcp_server(tools: IntercomTools) -> FastMCP:
             message: Your reply message.
         """
         return await tools.reply(thread_id=thread_id, message=message)
+
+    @mcp.tool()
+    async def intercom_upgrade(target: str = "outdated", version: str = "") -> dict:
+        """Trigger a network-wide upgrade of AI-Intercom daemons.
+
+        Sends upgrade commands to target daemons via the Hub. Each daemon
+        performs git pull + pip install + service restart.
+
+        Args:
+            target: "all" (every machine), "outdated" (version != hub), or a machine_id.
+            version: Target version (empty = latest).
+        """
+        return await tools.upgrade_network(target=target, version=version)
 
     @mcp.tool()
     async def intercom_check_inbox() -> dict:

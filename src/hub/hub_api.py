@@ -247,7 +247,9 @@ def create_hub_api(
             return Response(status_code=401, content="Unauthorized")
 
         await registry.update_heartbeat(
-            machine_id, active_agents=data.get("active_agents", [])
+            machine_id,
+            active_agents=data.get("active_agents", []),
+            version=data.get("version", ""),
         )
 
         # Store active sessions from daemon
@@ -708,6 +710,72 @@ def create_hub_api(
         lines = feedback_path.read_text().strip().split("\n")
         entries = [json.loads(line) for line in lines[-limit:] if line.strip()]
         return {"feedback": entries}
+
+    # --- Network upgrade ---
+
+    @app.post("/api/upgrade")
+    async def trigger_upgrade(request: Request):
+        """Trigger upgrade on target daemons.
+
+        Body: {"target": "all"|"outdated"|"<machine_id>", "version": ""}
+        """
+        data = await request.json()
+        target = data.get("target", "all")
+        target_version = data.get("version", "")
+
+        machines = await registry.list_machines()
+        if not machines:
+            return {"status": "no_machines", "results": []}
+
+        # Determine current hub version
+        try:
+            from importlib.metadata import version as _v
+            hub_version = _v("ai-intercom")
+        except Exception:
+            hub_version = "unknown"
+
+        # Filter targets
+        targets: list[dict] = []
+        for m in machines:
+            if m.get("status") == "revoked":
+                continue
+            mid = m["id"]
+            if target == "all":
+                targets.append(m)
+            elif target == "outdated":
+                mv = m.get("version", "")
+                if mv and mv != hub_version:
+                    targets.append(m)
+                elif not mv:
+                    targets.append(m)
+            elif mid == target:
+                targets.append(m)
+
+        results = []
+        for m in targets:
+            daemon_url = m.get("daemon_url", "")
+            if not daemon_url:
+                results.append({"machine_id": m["id"], "status": "no_daemon_url"})
+                continue
+            try:
+                async with httpx.AsyncClient(timeout=120) as client:
+                    resp = await client.post(
+                        f"{daemon_url}/api/upgrade",
+                        json={"version": target_version},
+                    )
+                    results.append({
+                        "machine_id": m["id"],
+                        "status": "ok",
+                        "response": resp.json(),
+                    })
+            except Exception as e:
+                results.append({
+                    "machine_id": m["id"],
+                    "status": "error",
+                    "error": str(e),
+                })
+
+        return {"status": "done", "hub_version": hub_version, "results": results}
 
     # --- Skill distribution ---
 

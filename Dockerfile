@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir .
 
 COPY config/config.example.yml ./config/
 COPY .claude/commands/ ./.claude/commands/
+COPY pwa/ ./pwa/
 
 RUN mkdir -p /app/data
 

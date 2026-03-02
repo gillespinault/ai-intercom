@@ -292,5 +292,19 @@ else
     echo "No settings.local.json found. Hooks will need manual configuration."
 fi
 
+# --- Save install metadata for self-upgrade ---
+echo ""
+echo "=== Saving install metadata ==="
+INSTALL_JSON="$CONFIG_DIR/install.json"
+cat > "$INSTALL_JSON" <<INST
+{
+  "method": "pip",
+  "venv": "$(dirname "$(dirname "$AI_INTERCOM_BIN")" 2>/dev/null || echo "")",
+  "repo": "",
+  "binary": "$AI_INTERCOM_BIN"
+}
+INST
+echo "Install metadata saved to $INSTALL_JSON"
+
 echo ""
 echo "=== Installation complete ==="

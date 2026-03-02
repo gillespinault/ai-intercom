@@ -259,6 +259,18 @@ def create_app(machine_id: str, token: str) -> FastAPI:
             "inbox_pending": inbox_pending,
         }
 
+    # --- Self-upgrade endpoint ---
+
+    @app.post("/api/upgrade")
+    async def self_upgrade(request: Request):
+        """Trigger self-upgrade on this daemon."""
+        data = await request.json()
+        target_version = data.get("version", "")
+
+        from src.daemon.upgrade import run_self_upgrade
+        result = run_self_upgrade(target_version=target_version)
+        return result
+
     # --- Attention Hub endpoints ---
 
     @app.get("/api/attention/sessions")
