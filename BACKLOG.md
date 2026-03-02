@@ -50,11 +50,13 @@ Les agents peuvent notifier l'humain via Telegram sans qu'il ait demande.
 - Notifications de fin de mission longue
 - Rapports periodiques automatiques
 
-### 7. Dashboard web de l'annuaire
-Interface web pour visualiser les machines, projets, statuts, missions en cours.
-- Vue temps-reel des heartbeats
+### 7. ~~Dashboard web de l'annuaire~~ → PARTIELLEMENT FAIT (v0.4.0)
+~~Interface web pour visualiser les machines, projets, statuts, missions en cours.~~
+PWA Attention Hub implementee (`/attention`) : vue temps-reel des sessions, terminal viewer, reponse aux prompts.
+Reste a faire :
 - Historique des missions
 - Logs de communication
+- Vue annuaire machines/projets complete
 
 ---
 
@@ -101,3 +103,10 @@ HMAC existe mais les tokens sont souvent vides.
 - [x] Hooks PostToolUse/UserPromptSubmit pour delivery automatique des messages (v0.3.0)
 - [x] Inbox fichier + CLI `check-inbox` pour integration hooks (v0.3.0)
 - [x] Sessions actives visibles dans heartbeat et `intercom_list_agents()` (v0.3.0)
+- [x] Push model : daemons poussent feedback/resultats vers Hub (v0.4.0)
+- [x] Attention Hub PWA : dashboard temps-reel des sessions agents (v0.4.0)
+- [x] Version tracking dans heartbeat + `machine_version` dans annuaire (v0.4.0)
+- [x] Self-upgrade CLI : `ai-intercom self-upgrade` (git pull + pip install + restart) (v0.4.0)
+- [x] Hub upgrade API : `POST /api/upgrade` + MCP tool `intercom_upgrade` (v0.4.0)
+- [x] GitHub Actions sync monorepo → repo dedie (v0.4.0)
+- [x] Bypass CLAUDECODE env var pour lancement agents (v0.4.0)

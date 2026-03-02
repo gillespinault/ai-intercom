@@ -21,7 +21,7 @@ A distributed inter-agent communication system that enables AI coding agents (Cl
  |  |  Approval     |       |             |       |                  |
  |  |  Engine       |       |             |  +----+----------+       |
  |  +------+--------+       |             |  |  MCP Server   |       |
- |  |  Registry     |       |             |  |  (11 tools)    |       |
+ |  |  Registry     |       |             |  |  (12 tools)    |       |
  |  |  (SQLite)     |       |             |  +---------------+       |
  |  +---------------+       |             |                          |
  +--------------------------+             +--------------------------+
@@ -46,12 +46,15 @@ A distributed inter-agent communication system that enables AI coding agents (Cl
 - **HMAC-SHA256 authentication** -- Per-machine tokens with timestamp anti-replay protection
 - **Tailscale auto-discovery** -- Install script scans the Tailscale network to find the hub automatically
 - **Interactive agent-to-agent chat** -- Asynchronous bidirectional messaging between active Claude Code sessions across machines via inbox queues and PostToolUse hooks
-- **MCP integration** -- Eleven tools exposed via Model Context Protocol so any MCP-compatible agent can use the intercom
+- **MCP integration** -- Twelve tools exposed via Model Context Protocol so any MCP-compatible agent can use the intercom
 - **Agent launcher** -- Start AI agents on remote machines with mission context and path restrictions
 - **Real-time mission feedback** -- Live streaming of agent activity (tools used, files read, commands run) via Telegram progress messages
 - **Policy engine** -- Glob/regex-based approval rules with runtime grants (mission-level, session-level)
 - **SQLite registry** -- Persistent machine and project tracking with heartbeat monitoring
 - **Intelligent dispatcher** -- Send natural language messages in Telegram and Claude interprets and executes via MCP intercom tools
+- **Version tracking** -- Daemons report their version in heartbeats; visible in agent listings for fleet management
+- **Self-upgrade** -- `ai-intercom self-upgrade` performs git pull, pip install, and daemon restart across the network
+- **Attention Hub PWA** -- Progressive Web App dashboard at `/attention` for monitoring agent sessions and responding to prompts
 - **Docker support** -- Separate Compose files for hub and daemon deployment
 
 ## Quick Start
@@ -126,6 +129,7 @@ Add to your agent's MCP configuration (e.g., `.mcp.json`):
 | `intercom_chat` | Send a message to an agent's active session. Creates a conversation thread. |
 | `intercom_reply` | Reply to a message in an existing conversation thread. |
 | `intercom_check_inbox` | Manually check for pending messages from other agents. |
+| `intercom_upgrade` | Trigger network-wide daemon upgrades (`"all"`, `"outdated"`, or specific machine). |
 
 ## Configuration Reference
 
@@ -336,7 +340,8 @@ src/
     api.py            # FastAPI: health, status, message receive
     hub_client.py     # HTTP client for hub communication
     agent_launcher.py # Subprocess agent launcher with path validation and stream-json feedback
-    mcp_server.py     # FastMCP server exposing 11 intercom tools
+    mcp_server.py     # FastMCP server exposing 12 intercom tools
+    upgrade.py        # Self-upgrade mechanism (detect, pull, install, restart)
   cli.py              # CLI entry point (hub/daemon/standalone/mcp-server)
   main.py             # Module entry point
 

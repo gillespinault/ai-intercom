@@ -238,3 +238,52 @@ curl -sf http://<hub-tailscale-ip>:7700/api/discover
 - The MCP server detects the project from the current working directory
 - Ensure your project has a `CLAUDE.md` or `.claude/` directory
 - The project must be in one of the configured `scan_paths`
+
+## Upgrading
+
+### Self-Upgrade (per machine)
+
+```bash
+# Check current install info
+ai-intercom self-upgrade --detect-only
+
+# Upgrade to latest
+ai-intercom self-upgrade
+```
+
+The self-upgrade mechanism:
+1. Detects install method from `~/.config/ai-intercom/install.json`
+2. Runs `git pull` if installed from a git repo
+3. Runs `pip install -e .` (editable) or `pip install --upgrade` (pip)
+4. Restarts the daemon via systemctl
+
+### Network-Wide Upgrade (from any agent)
+
+Use the `intercom_upgrade` MCP tool or the Hub API:
+
+```bash
+# Via Hub API - upgrade all machines
+curl -X POST http://<hub>:7700/api/upgrade \
+  -H "Content-Type: application/json" \
+  -d '{"target": "outdated"}'
+```
+
+Target options:
+- `"all"` -- Upgrade every machine
+- `"outdated"` -- Only machines with version != hub version
+- `"<machine_id>"` -- Specific machine
+
+**Note:** Remote machines must already have v0.4.0+ installed for the `/api/upgrade` endpoint to exist. For the initial upgrade to v0.4.0, use manual `git pull && pip install -e . && systemctl restart` on each machine.
+
+### Version Monitoring
+
+After v0.4.0, each daemon reports its version in heartbeats:
+
+```bash
+curl http://<hub>:7700/api/agents?filter=all | python3 -c "
+import json, sys
+for a in json.load(sys.stdin)['agents']:
+    mid = a.get('machine_id','?')
+    ver = a.get('machine_version','')
+    if mid not in seen: seen.add(mid); print(f'{mid}: {ver or \"unknown\"}')"
+```

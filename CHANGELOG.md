@@ -2,6 +2,26 @@
 
 All notable changes to AI-Intercom are documented here.
 
+## [0.4.0] - 2026-03-02
+
+### Added
+- **Push model architecture** -- Daemons push feedback/results to Hub instead of Hub polling daemons. Hub stores mission state as single source of truth.
+- **Attention Hub PWA** -- Progressive Web App dashboard at `/attention` for monitoring agent sessions, viewing terminal content, and responding to prompts from mobile/desktop
+- **Version tracking** -- Each daemon reports its version in heartbeat; `machine_version` field visible in `intercom_list_agents()` and `/api/agents`
+- **Self-upgrade CLI** -- `ai-intercom self-upgrade` performs git pull + pip install + daemon restart. `--detect-only` shows install metadata.
+- **Hub upgrade API** -- `POST /api/upgrade` dispatches upgrade commands to target daemons (`"all"`, `"outdated"`, or specific machine)
+- **`intercom_upgrade` MCP tool** -- Trigger network-wide daemon upgrades from any agent session
+- **Install metadata persistence** -- `~/.config/ai-intercom/install.json` stores install method, venv path, repo path for reliable self-upgrade
+- **Attention monitor** -- Detects Claude Code sessions waiting for user input via tmux prompt detection
+- **GitHub Actions sync** -- Workflow syncs monorepo `projects/AI-intercom/` to dedicated `gillespinault/ai-intercom` repo on push
+
+### Fixed
+- Agent launcher now strips `CLAUDECODE` environment variable before launching subprocesses, preventing "nested session" detection failures on machines with active Claude Code sessions
+
+### Changed
+- `intercom_status` reads from Hub mission store (push model) instead of polling daemon directly
+- `/intercom` skill updated with chat/ask/send decision tree
+
 ## [0.3.0] - 2026-02-28
 
 ### Added
