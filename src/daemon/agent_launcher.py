@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -127,6 +128,9 @@ class AgentLauncher:
         command = agent_command or self.default_command
         args = self.default_args.copy()
 
+        # Clean env so nested Claude Code detection doesn't block agent launch
+        clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 command,
@@ -135,6 +139,7 @@ class AgentLauncher:
                 cwd=project_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=clean_env,
             )
             self._active[mission_id] = proc
 
@@ -190,6 +195,8 @@ class AgentLauncher:
         result = self._results.get(mission_id)
         final_output = ""
 
+        clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 command,
@@ -198,6 +205,7 @@ class AgentLauncher:
                 cwd=project_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=clean_env,
             )
             self._active[mission_id] = proc
 
