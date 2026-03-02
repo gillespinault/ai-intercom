@@ -1,5 +1,6 @@
 """Tests for the hub AttentionStore."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -309,3 +310,88 @@ class TestUnknownEventType:
         store = AttentionStore()
         store.handle_event("laptop", {"type": "new_session"})
         assert len(store.get_all_sessions()) == 0
+
+
+class TestWaitingDebounce:
+    """Tests for the WAITING notification debounce logic."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_waiting_fires_callback_once(self):
+        """Two consecutive WAITING events for the same session only trigger one callback."""
+        store = AttentionStore()
+        callback = AsyncMock()
+        store.set_on_waiting_callback(callback)
+
+        waiting_session = _make_session(state=AttentionState.WAITING)
+
+        store.handle_event("laptop", {
+            "type": "new_session",
+            "session": waiting_session.model_dump(),
+        })
+        # Give the asyncio.create_task a chance to run
+        await asyncio.sleep(0)
+
+        store.handle_event("laptop", {
+            "type": "state_changed",
+            "session": waiting_session.model_dump(),
+        })
+        await asyncio.sleep(0)
+
+        assert callback.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_waiting_working_waiting_fires_twice(self):
+        """WAITING → WORKING → WAITING resets debounce, so callback fires twice."""
+        store = AttentionStore()
+        callback = AsyncMock()
+        store.set_on_waiting_callback(callback)
+
+        # First WAITING
+        store.handle_event("laptop", {
+            "type": "new_session",
+            "session": _make_session(state=AttentionState.WAITING).model_dump(),
+        })
+        await asyncio.sleep(0)
+
+        # WORKING (resets debounce)
+        store.handle_event("laptop", {
+            "type": "state_changed",
+            "session": _make_session(state=AttentionState.WORKING).model_dump(),
+        })
+        await asyncio.sleep(0)
+
+        # Second WAITING
+        store.handle_event("laptop", {
+            "type": "state_changed",
+            "session": _make_session(state=AttentionState.WAITING).model_dump(),
+        })
+        await asyncio.sleep(0)
+
+        assert callback.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_session_ended_cleans_debounce(self):
+        """session_ended clears the debounce set so a re-created session can notify."""
+        store = AttentionStore()
+        callback = AsyncMock()
+        store.set_on_waiting_callback(callback)
+
+        store.handle_event("laptop", {
+            "type": "new_session",
+            "session": _make_session(state=AttentionState.WAITING).model_dump(),
+        })
+        await asyncio.sleep(0)
+        assert callback.call_count == 1
+
+        store.handle_event("laptop", {
+            "type": "session_ended",
+            "session": _make_session(state=AttentionState.ENDED).model_dump(),
+        })
+
+        # Same session_id re-appears
+        store.handle_event("laptop", {
+            "type": "new_session",
+            "session": _make_session(state=AttentionState.WAITING).model_dump(),
+        })
+        await asyncio.sleep(0)
+        assert callback.call_count == 2

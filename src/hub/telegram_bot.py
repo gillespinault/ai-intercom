@@ -101,6 +101,7 @@ class TelegramBot:
         on_start_command: Any = None,
         on_approval_response: Any = None,
         on_dispatch: Any = None,
+        dashboard_url: str = "",
     ):
         self.supergroup_id = supergroup_id
         self.allowed_users = allowed_users
@@ -108,6 +109,7 @@ class TelegramBot:
         self.on_start_command = on_start_command
         self.on_approval_response = on_approval_response
         self.on_dispatch = on_dispatch
+        self.dashboard_url = dashboard_url
 
         self.app = Application.builder().token(bot_token).build()
         self._setup_handlers()
@@ -124,6 +126,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("stop", self._cmd_stop))
         self.app.add_handler(CommandHandler("machines", self._cmd_machines))
         self.app.add_handler(CommandHandler("policy", self._cmd_policy))
+        self.app.add_handler(CommandHandler("attention", self._cmd_attention))
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
@@ -302,6 +305,58 @@ class TelegramBot:
         if self.on_human_message:
             text = " ".join(context.args) if context.args else "list"
             await self.on_human_message(f"policy:{text}", update, context)
+
+    async def _cmd_attention(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle /attention command - link to the PWA Attention Hub dashboard."""
+        if not self._is_authorized(update.effective_user.id):
+            return
+        if not self.dashboard_url:
+            await update.message.reply_text("Dashboard URL not configured.")
+            return
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("\U0001f4ca Attention Hub", url=self.dashboard_url)]]
+        )
+        await update.message.reply_text(
+            "\U0001f517 *Attention Hub Dashboard*",
+            reply_markup=keyboard,
+            parse_mode="Markdown",
+        )
+
+    async def send_attention_notification(self, session) -> None:
+        """Send a Telegram notification when an agent needs attention."""
+        if not self.dashboard_url:
+            return
+        bot: Bot = self.app.bot
+        text = (
+            f"\U0001f514 *Attention requise*\n\n"
+            f"*Agent:* {session.machine}/{session.project}\n"
+            f"*Session:* {session.session_name or session.session_id[:8]}\n"
+        )
+        if session.prompt:
+            text += f"*Type:* {session.prompt.type}\n"
+            if session.prompt.question:
+                text += f"*Question:* {session.prompt.question[:200]}\n"
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("\U0001f4ca Ouvrir Dashboard", url=self.dashboard_url)]]
+        )
+        try:
+            await bot.send_message(
+                chat_id=self.supergroup_id,
+                text=text,
+                reply_markup=keyboard,
+                parse_mode="Markdown",
+            )
+        except Exception:
+            try:
+                await bot.send_message(
+                    chat_id=self.supergroup_id,
+                    text=text,
+                    reply_markup=keyboard,
+                )
+            except Exception as e:
+                logger.warning("Failed to send attention notification: %s", e)
 
     async def _handle_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

@@ -22,6 +22,7 @@ telegram:
 hub:
   url: ""                 # Daemon: URL of the hub
   listen: "0.0.0.0:7700" # Hub: listen address
+  dashboard_url: ""       # HTTPS URL for PWA Attention Hub (e.g. https://myhost.ts.net/attention)
 
 # Auth
 auth:

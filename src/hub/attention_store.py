@@ -27,6 +27,12 @@ class AttentionStore:
     def __init__(self) -> None:
         self._sessions: dict[str, AttentionSession] = {}
         self._subscribers: list[WebSocket] = []
+        self._notified_waiting: set[str] = set()
+        self._on_waiting_callback = None  # async callable(AttentionSession)
+
+    def set_on_waiting_callback(self, callback) -> None:
+        """Set an async callback to invoke when a session enters WAITING state."""
+        self._on_waiting_callback = callback
 
     # ------------------------------------------------------------------
     # Event handling
@@ -58,8 +64,19 @@ class AttentionStore:
 
         if event_type in ("new_session", "state_changed"):
             self._sessions[session.session_id] = session
+            # Notify on WAITING transition (debounced per session)
+            if session.state == AttentionState.WAITING:
+                if session.session_id not in self._notified_waiting:
+                    self._notified_waiting.add(session.session_id)
+                    if self._on_waiting_callback:
+                        import asyncio
+                        asyncio.create_task(self._on_waiting_callback(session))
+            elif session.session_id in self._notified_waiting:
+                # Reset debounce when leaving WAITING
+                self._notified_waiting.discard(session.session_id)
         elif event_type == "session_ended":
             self._sessions.pop(session.session_id, None)
+            self._notified_waiting.discard(session.session_id)
         else:
             logger.warning("Unknown attention event type %r from %s", event_type, machine_id)
 

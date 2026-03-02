@@ -21,10 +21,20 @@ A distributed inter-agent communication system that enables AI coding agents (Cl
  |  |  Approval     |       |             |       |                  |
  |  |  Engine       |       |             |  +----+----------+       |
  |  +------+--------+       |             |  |  MCP Server   |       |
- |  |  Registry     |       |             |  |  (12 tools)    |       |
- |  |  (SQLite)     |       |             |  +---------------+       |
- |  +---------------+       |             |                          |
- +--------------------------+             +--------------------------+
+ |  |  Registry     |       |             |  |  (12 tools)   |       |
+ |  |  (SQLite)     |       |             |  +----+----------+       |
+ |  +------+--------+       |             |       |                  |
+ |  |  Attention    |       |             |  +----+----------+       |
+ |  |  Store + API  |<------+-- events ---+--+ Attention     |       |
+ |  +------+--------+       |             |  | Monitor       |       |
+ |         |                |             |  +----+----------+       |
+ |    WebSocket             |             |       ^                  |
+ |         v                |             |  /tmp/cc-sessions/*.json |
+ |  +------+--------+       |             |  (heartbeat files)       |
+ |  |  PWA Dashboard|       |             |                          |
+ |  |  /attention   |       |             +--------------------------+
+ |  +---------------+       |
+ +--------------------------+
 
  Machine C (Daemon)              Human
  +--------------------------+    +--------------------+
@@ -32,7 +42,16 @@ A distributed inter-agent communication system that enables AI coding agents (Cl
  |  MCP Server              |    | - Approve/deny     |
  |  Daemon API              |    | - Read transcripts |
  |  Hub Client      --------+--->| - /start_agent     |
- +--------------------------+    +--------------------+
+ +--------------------------+    | - /attention alerts |
+                                 +--------------------+
+                                 +--------------------+
+                                 | PWA Dashboard      |
+                                 | /attention         |
+                                 | - Session status   |
+                                 | - Terminal viewer  |
+                                 | - Respond to       |
+                                 |   prompts          |
+                                 +--------------------+
 ```
 
 **Hub** runs on one machine: Telegram bot, message router, approval engine, and SQLite registry.
@@ -54,7 +73,12 @@ A distributed inter-agent communication system that enables AI coding agents (Cl
 - **Intelligent dispatcher** -- Send natural language messages in Telegram and Claude interprets and executes via MCP intercom tools
 - **Version tracking** -- Daemons report their version in heartbeats; visible in agent listings for fleet management
 - **Self-upgrade** -- `ai-intercom self-upgrade` performs git pull, pip install, and daemon restart across the network
-- **Attention Hub PWA** -- Progressive Web App dashboard at `/attention` for monitoring agent sessions and responding to prompts
+- **Attention Hub** -- Full pipeline for detecting when AI agents need human attention:
+  - Claude Code hooks (`cc-heartbeat.sh`) write session heartbeat files to `/tmp/cc-sessions/`
+  - Daemon `AttentionMonitor` reads heartbeats, detects state transitions (working/thinking/waiting), captures terminal output via tmux
+  - State-change events are pushed to the Hub, which stores them and broadcasts via WebSocket
+  - PWA dashboard at `/attention` shows real-time session status, terminal viewer, and prompt response UI
+  - Telegram notifications alert when a session transitions to WAITING state
 - **Docker support** -- Separate Compose files for hub and daemon deployment
 
 ## Quick Start
@@ -325,35 +349,50 @@ pytest --tb=short -q
 ```
 src/
   shared/
-    models.py         # Message, AgentId, AgentInfo, MachineInfo (Pydantic)
-    config.py         # YAML config loader with env var overrides
-    auth.py           # HMAC-SHA256 sign/verify with anti-replay
+    models.py           # Message, AgentId, AgentInfo, AttentionSession, etc. (Pydantic)
+    config.py           # YAML config loader with env var overrides
+    auth.py             # HMAC-SHA256 sign/verify with anti-replay
   hub/
-    main.py           # Hub entry point (Telegram bot + HTTP API)
-    hub_api.py        # FastAPI: register, heartbeat, join, discover
-    registry.py       # SQLite-backed machine/project registry
-    router.py         # Message routing with approval checks
-    approval.py       # Policy engine (glob/regex rules, runtime grants)
-    telegram_bot.py   # Telegram bot (forum topics, commands, keyboards)
+    main.py             # Hub entry point (Telegram bot + HTTP API + attention)
+    hub_api.py          # FastAPI: register, heartbeat, join, discover, attention events
+    registry.py         # SQLite-backed machine/project registry
+    router.py           # Message routing with approval checks
+    approval.py         # Policy engine (glob/regex rules, runtime grants)
+    telegram_bot.py     # Telegram bot (forum topics, commands, keyboards, /attention alerts)
+    attention_store.py  # In-memory session store with WebSocket broadcasting
+    attention_api.py    # REST + WebSocket endpoints for the PWA dashboard
   daemon/
-    main.py           # Daemon entry point (HTTP API + hub registration)
-    api.py            # FastAPI: health, status, message receive
-    hub_client.py     # HTTP client for hub communication
-    agent_launcher.py # Subprocess agent launcher with path validation and stream-json feedback
-    mcp_server.py     # FastMCP server exposing 12 intercom tools
-    upgrade.py        # Self-upgrade mechanism (detect, pull, install, restart)
-  cli.py              # CLI entry point (hub/daemon/standalone/mcp-server)
-  main.py             # Module entry point
+    main.py             # Daemon entry point (HTTP API + hub registration + attention monitor)
+    api.py              # FastAPI: health, status, message receive
+    hub_client.py       # HTTP client for hub communication (incl. push_attention_event)
+    agent_launcher.py   # Subprocess agent launcher with path validation and stream-json feedback
+    mcp_server.py       # FastMCP server exposing 12 intercom tools
+    upgrade.py          # Self-upgrade mechanism (detect, pull, install, restart)
+    attention_monitor.py # Reads heartbeat files, detects state changes, pushes events to hub
+    prompt_parser.py    # Parses tmux terminal output to detect Claude Code prompts
+  cli.py                # CLI entry point (hub/daemon/standalone/mcp-server)
+  main.py               # Module entry point
+
+pwa/                    # Attention Hub Progressive Web App
+  index.html            # Dashboard shell
+  app.js                # WebSocket client, session rendering
+  styles.css            # Dashboard styles
+  terminal.js           # Terminal viewer component
+  manifest.json         # PWA manifest
+  sw.js                 # Service worker
+
+scripts/
+  cc-heartbeat.sh       # Claude Code hook script: writes heartbeat files to /tmp/cc-sessions/
 
 tests/
-  test_shared/        # Config, models, auth tests
-  test_hub/           # Registry, approval, router, telegram, hub_api tests
-  test_daemon/        # Daemon API, hub client, agent launcher, MCP tests
-  test_integration/   # End-to-end message flow tests
+  test_shared/          # Config, models, auth tests
+  test_hub/             # Registry, approval, router, telegram, hub_api tests
+  test_daemon/          # Daemon API, hub client, agent launcher, MCP tests
+  test_integration/     # End-to-end message flow tests
 
 config/
-  config.example.yml  # Example configuration
-  policies.example.yml # Example approval policies
+  config.example.yml    # Example configuration
+  policies.example.yml  # Example approval policies
 ```
 
 ## License

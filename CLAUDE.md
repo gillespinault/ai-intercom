@@ -2,37 +2,42 @@
 
 ## Project Overview
 
-AI-Intercom is a multi-machine agent communication system. It connects AI agents (Claude Code, Codex, etc.) across machines via a hub-and-daemon architecture, with Telegram as the human interface.
+AI-Intercom is a multi-machine agent communication system. It connects AI agents (Claude Code, Codex, etc.) across machines via a hub-and-daemon architecture, with Telegram as the human interface and an Attention Hub for detecting when agents need human input.
 
 **Architecture:**
-- **Hub** (central, runs on main server): API server + Telegram bot + agent registry + mission router
-- **Daemon** (one per machine): registers with hub, launches agents, reports status
+- **Hub** (central, runs on main server): API server + Telegram bot + agent registry + mission router + attention store
+- **Daemon** (one per machine): registers with hub, launches agents, reports status, monitors attention state
 - **MCP Server** (per agent session): exposes 12 intercom tools to Claude Code via MCP protocol
+- **Attention pipeline**: Claude Code hooks -> heartbeat files -> AttentionMonitor -> Hub API -> PWA WebSocket + Telegram notifications
 
 ## Key Files
 
 ```
 src/
-├── cli.py                    # CLI entry point (hub/daemon/mcp-server subcommands)
-├── main.py                   # Top-level entry
+├── cli.py                       # CLI entry point (hub/daemon/mcp-server subcommands)
+├── main.py                      # Top-level entry
 ├── hub/
-│   ├── main.py               # Hub startup, wires Telegram + API + router
-│   ├── hub_api.py            # FastAPI endpoints (register, heartbeat, missions, feedback)
-│   ├── telegram_bot.py       # Telegram bot (commands, callbacks, mission topics)
-│   ├── registry.py           # Agent/machine registry (in-memory + persistence)
-│   ├── router.py             # Message routing between agents
-│   └── approval.py           # Mission approval logic
+│   ├── main.py                  # Hub startup, wires Telegram + API + router + attention
+│   ├── hub_api.py               # FastAPI endpoints (register, heartbeat, missions, feedback, attention)
+│   ├── telegram_bot.py          # Telegram bot (commands, callbacks, mission topics, /attention alerts)
+│   ├── registry.py              # Agent/machine registry (in-memory + persistence)
+│   ├── router.py                # Message routing between agents
+│   ├── approval.py              # Mission approval logic
+│   ├── attention_store.py       # In-memory session store + WebSocket broadcasting to PWA
+│   └── attention_api.py         # REST + WebSocket endpoints for the attention dashboard
 ├── daemon/
-│   ├── main.py               # Daemon startup
-│   ├── api.py                # Daemon HTTP API (receive missions)
-│   ├── hub_client.py         # HTTP client for hub API calls
-│   ├── mcp_server.py         # MCP tool definitions (12 tools)
-│   ├── upgrade.py            # Self-upgrade mechanism (detect, pull, install, restart)
-│   └── agent_launcher.py     # Launches Claude/Codex agents for missions
+│   ├── main.py                  # Daemon startup + AttentionMonitor sidecar
+│   ├── api.py                   # Daemon HTTP API (receive missions)
+│   ├── hub_client.py            # HTTP client for hub API calls (incl. push_attention_event)
+│   ├── mcp_server.py            # MCP tool definitions (12 tools)
+│   ├── upgrade.py               # Self-upgrade mechanism (detect, pull, install, restart)
+│   ├── agent_launcher.py        # Launches Claude/Codex agents for missions
+│   ├── attention_monitor.py     # Reads /tmp/cc-sessions/ heartbeats, detects state, pushes to hub
+│   └── prompt_parser.py         # Parses tmux terminal output to detect Claude Code prompts
 └── shared/
-    ├── config.py             # Configuration model (YAML parsing)
-    ├── models.py             # Shared data models (Message, SessionInfo, ThreadMessage)
-    └── auth.py               # Token-based auth
+    ├── config.py                # Configuration model (YAML parsing)
+    ├── models.py                # Shared data models (Message, AttentionSession, SessionInfo, etc.)
+    └── auth.py                  # Token-based auth
 ```
 
 Other key files:
@@ -41,6 +46,8 @@ Other key files:
 - `docker-compose.daemon.yml` - Daemon Docker deployment
 - `install.sh` - Automated daemon installation script
 - `data/feedback.jsonl` - Stored agent feedback
+- `scripts/cc-heartbeat.sh` - Claude Code hook script writing heartbeats to `/tmp/cc-sessions/`
+- `pwa/` - Attention Hub Progressive Web App (served at `/attention`)
 
 ## Commands
 

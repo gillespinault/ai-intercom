@@ -57,6 +57,8 @@ Reste a faire :
 - Historique des missions
 - Logs de communication
 - Vue annuaire machines/projets complete
+- Terminal viewer sans tmux : actuellement capture/injection requiert tmux (`capture-pane`, `send-keys`), les sessions non-tmux n'ont pas de terminal view ni de reponse aux prompts
+- Hooks multi-machine : `cc-heartbeat.sh` deploye uniquement sur serverlab, a installer sur limn/vps via `install.sh`
 
 ---
 
@@ -110,3 +112,5 @@ HMAC existe mais les tokens sont souvent vides.
 - [x] Hub upgrade API : `POST /api/upgrade` + MCP tool `intercom_upgrade` (v0.4.0)
 - [x] GitHub Actions sync monorepo → repo dedie (v0.4.0)
 - [x] Bypass CLAUDECODE env var pour lancement agents (v0.4.0)
+- [x] Heartbeat hooks Claude Code : `cc-heartbeat.sh` via SessionStart/Stop/Notification/UserPromptSubmit ecrit dans `/tmp/cc-sessions/` (v0.4.0)
+- [x] Fix push_attention_event : format event wrapping pour match hub API (v0.4.0)

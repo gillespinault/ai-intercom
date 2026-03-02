@@ -203,8 +203,10 @@ class HubClient:
         session = event.get("session")
         data = {
             "machine_id": self.machine_id,
-            "event_type": event["type"],
-            "session": session.model_dump() if hasattr(session, "model_dump") else session,
+            "event": {
+                "type": event["type"],
+                "session": session.model_dump() if hasattr(session, "model_dump") else session,
+            },
         }
         return await self._post("/api/attention/event", data)
 

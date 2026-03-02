@@ -178,6 +178,88 @@ To give your AI agents access to intercom tools, add to `.mcp.json` (project-lev
 
 The MCP server auto-detects which project it's running in based on the working directory.
 
+## Attention Hub Setup
+
+The Attention Hub detects when Claude Code sessions are waiting for human input and notifies you via the PWA dashboard and Telegram. The pipeline is: **hooks -> heartbeat files -> AttentionMonitor -> Hub API -> PWA WebSocket + Telegram**.
+
+### Step 1: Install the heartbeat hook script
+
+On each machine running Claude Code:
+
+```bash
+# Copy the script to a location in PATH
+sudo cp scripts/cc-heartbeat.sh /usr/local/bin/cc-heartbeat.sh
+sudo chmod +x /usr/local/bin/cc-heartbeat.sh
+```
+
+Dependencies: `jq` must be installed (`sudo apt install jq`).
+
+### Step 2: Configure Claude Code hooks
+
+Add the following hooks to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [{ "type": "command", "command": "cc-heartbeat.sh start" }]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{ "type": "command", "command": "cc-heartbeat.sh stop" }]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [{ "type": "command", "command": "cc-heartbeat.sh waiting" }]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [{ "type": "command", "command": "cc-heartbeat.sh working" }]
+      }
+    ]
+  }
+}
+```
+
+Each hook receives JSON on stdin from Claude Code (including `session_id` and `cwd`). The script writes a heartbeat file to `/tmp/cc-sessions/<pid>.json`.
+
+### Step 3: Verify the pipeline
+
+1. **Check heartbeat files** -- Start a Claude Code session, then:
+   ```bash
+   ls -la /tmp/cc-sessions/
+   cat /tmp/cc-sessions/*.json
+   ```
+   You should see a JSON file with `pid`, `session_id`, `machine`, `project`, `last_tool`, and `last_tool_time`.
+
+2. **Check the daemon picks up sessions** -- The daemon's `AttentionMonitor` reads `/tmp/cc-sessions/` every 3 seconds. Check daemon logs:
+   ```bash
+   journalctl -u ai-intercom -f | grep -i attention
+   ```
+
+3. **Check the PWA dashboard** -- Open `http://<hub-ip>:7700/attention` in a browser. Active sessions should appear with their state (WORKING, THINKING, or WAITING).
+
+4. **Check Telegram notifications** -- When a session transitions to WAITING, the Telegram bot sends an alert in the supergroup. Use the `/attention` command in Telegram to see current WAITING sessions.
+
+### How it works
+
+| Component | Location | Role |
+|-----------|----------|------|
+| `cc-heartbeat.sh` | Each machine | Writes heartbeat JSON files on hook events |
+| `/tmp/cc-sessions/*.json` | Each machine | Heartbeat files (one per Claude Code process) |
+| `AttentionMonitor` | Daemon process | Reads heartbeats, detects state changes, pushes events to hub |
+| `prompt_parser.py` | Daemon process | Parses tmux terminal output to extract prompt details |
+| `attention_store.py` | Hub process | Aggregates sessions from all daemons, broadcasts via WebSocket |
+| `attention_api.py` | Hub process | REST endpoints + WebSocket for the PWA |
+| `pwa/` | Hub (served) | Browser dashboard at `/attention` |
+
+> **Note:** Terminal viewing and prompt response require the Claude Code session to run inside tmux. Sessions not in tmux will still show state (WORKING/WAITING) but without terminal content.
+
 ## Project Discovery
 
 Daemons automatically discover projects by scanning `scan_paths` for `CLAUDE.md` or `.claude/` markers. A `home` project is always registered for general admin tasks.

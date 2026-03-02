@@ -13,10 +13,13 @@ All notable changes to AI-Intercom are documented here.
 - **`intercom_upgrade` MCP tool** -- Trigger network-wide daemon upgrades from any agent session
 - **Install metadata persistence** -- `~/.config/ai-intercom/install.json` stores install method, venv path, repo path for reliable self-upgrade
 - **Attention monitor** -- Detects Claude Code sessions waiting for user input via tmux prompt detection
+- **Heartbeat hooks** -- `scripts/cc-heartbeat.sh` integrates with Claude Code hooks (SessionStart, Stop, Notification, UserPromptSubmit) to write session heartbeat files into `/tmp/cc-sessions/`, enabling attention detection without tmux
 - **GitHub Actions sync** -- Workflow syncs monorepo `projects/AI-intercom/` to dedicated `gillespinault/ai-intercom` repo on push
 
 ### Fixed
 - Agent launcher now strips `CLAUDECODE` environment variable before launching subprocesses, preventing "nested session" detection failures on machines with active Claude Code sessions
+- `push_attention_event` in daemon hub client was sending `{"event_type": ..., "session": ...}` but the hub expected `{"event": {"type": ..., "session": ...}}` -- corrected to match hub API schema
+- Heartbeat hook PPID resolution: `$PPID` pointed to the ephemeral hook wrapper process instead of the actual Claude Code process; now resolves the grandparent PID via `ps -o ppid=`
 
 ### Changed
 - `intercom_status` reads from Hub mission store (push model) instead of polling daemon directly

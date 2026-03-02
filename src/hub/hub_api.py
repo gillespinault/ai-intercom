@@ -50,6 +50,12 @@ def create_hub_api(
     app.include_router(create_attention_router(attention_store, registry))
     app.include_router(create_pwa_router())
 
+    # Wire attention → Telegram notifications
+    if telegram_bot and hasattr(telegram_bot, "send_attention_notification"):
+        attention_store.set_on_waiting_callback(
+            telegram_bot.send_attention_notification
+        )
+
     # --- Auth helper ---
 
     async def _verify_machine(request: Request, body: bytes, machine_id: str) -> bool:

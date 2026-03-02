@@ -378,6 +378,7 @@ async def run_hub(config: IntercomConfig) -> None:
         on_start_command=on_start_command,
         on_approval_response=on_approval_response,
         on_dispatch=on_dispatch,
+        dashboard_url=config.hub.get("dashboard_url", ""),
     )
 
     # Router
