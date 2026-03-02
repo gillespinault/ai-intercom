@@ -241,13 +241,17 @@ def _restart_daemon_service() -> dict:
     except Exception:
         pass
 
-    # Try systemd user service
+    # Try systemd user service (needs XDG_RUNTIME_DIR for D-Bus access)
     try:
+        uid = os.getuid()
+        env = os.environ.copy()
+        env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
         proc = subprocess.run(
             ["systemctl", "--user", "restart", "ai-intercom-daemon"],
             capture_output=True,
             text=True,
             timeout=15,
+            env=env,
         )
         if proc.returncode == 0:
             return {"action": "systemctl --user restart", "restarted": True, "method": "user"}
