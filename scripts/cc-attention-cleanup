@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# cc-attention-cleanup: Called by Claude Code Stop hook.
+# Removes the heartbeat file for this session.
+SESSIONS_DIR="/tmp/cc-sessions"
+PID="${PPID}"
+rm -f "$SESSIONS_DIR/$PID.json"

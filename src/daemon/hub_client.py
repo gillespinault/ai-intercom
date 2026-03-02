@@ -101,9 +101,45 @@ class HubClient:
             f"/api/missions/{mission_id}/history", {"limit": limit}
         )
 
-    async def get_daemon_mission_status(self, mission_id: str) -> dict:
-        """Get mission status from the daemon running it (via hub proxy)."""
-        return await self._get(f"/api/missions/{mission_id}/daemon-status")
+    async def get_mission_status(self, mission_id: str) -> dict:
+        """Get mission status from Hub (push-model data)."""
+        return await self._get(f"/api/missions/{mission_id}/status")
+
+    async def push_feedback(
+        self,
+        mission_id: str,
+        feedback: list[dict],
+        turn_count: int,
+        status: str,
+    ) -> dict:
+        """Push feedback batch to Hub for a running mission."""
+        return await self._post(f"/api/missions/{mission_id}/feedback", {
+            "machine_id": self.machine_id,
+            "feedback": feedback,
+            "turn_count": turn_count,
+            "status": status,
+        })
+
+    async def push_result(
+        self,
+        mission_id: str,
+        status: str,
+        output: str | None,
+        feedback: list[dict],
+        started_at: str,
+        finished_at: str | None,
+        turn_count: int,
+    ) -> dict:
+        """Push final mission result to Hub."""
+        return await self._post(f"/api/missions/{mission_id}/result", {
+            "machine_id": self.machine_id,
+            "status": status,
+            "output": output,
+            "feedback": feedback,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "turn_count": turn_count,
+        })
 
     async def submit_feedback(
         self,
@@ -161,6 +197,16 @@ class HubClient:
                 "payload": {"message": message, "thread_id": thread_id},
             },
         )
+
+    async def push_attention_event(self, event: dict) -> dict:
+        """Push an attention state change event to the hub."""
+        session = event.get("session")
+        data = {
+            "machine_id": self.machine_id,
+            "event_type": event["type"],
+            "session": session.model_dump() if hasattr(session, "model_dump") else session,
+        }
+        return await self._post("/api/attention/event", data)
 
     async def register(
         self,

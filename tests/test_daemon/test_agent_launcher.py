@@ -1,5 +1,6 @@
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 from src.daemon.agent_launcher import (
@@ -289,3 +290,35 @@ def test_summarize_tool_input_unknown():
     """Unknown tools should return empty string."""
     result = _summarize_tool_input("UnknownTool", {"foo": "bar"})
     assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_run_agent_pushes_result(tmp_path):
+    """After agent completes, _run_agent pushes result to hub_client."""
+    mock_hub_client = AsyncMock()
+    mock_hub_client.push_result = AsyncMock(return_value={"status": "ok"})
+    mock_hub_client.push_feedback = AsyncMock(return_value={"status": "ok"})
+
+    launcher = AgentLauncher(
+        default_command="echo",
+        default_args=["hello"],
+        allowed_paths=[str(tmp_path)],
+        max_duration=10,
+        hub_client=mock_hub_client,
+    )
+
+    mission_id = await launcher.launch_background(
+        mission="test",
+        context_messages=[],
+        mission_id="m-push-1",
+        project_path=str(tmp_path),
+    )
+
+    # Wait for completion
+    await asyncio.sleep(2)
+
+    # Verify push_result was called
+    mock_hub_client.push_result.assert_called_once()
+    call_kwargs = mock_hub_client.push_result.call_args[1]
+    assert call_kwargs["mission_id"] == "m-push-1"
+    assert call_kwargs["status"] in ("completed", "failed")

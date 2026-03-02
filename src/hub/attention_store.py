@@ -1,0 +1,115 @@
+"""In-memory attention store aggregating sessions from all daemons.
+
+Tracks :class:`AttentionSession` objects received via daemon events and
+supports WebSocket broadcasting to PWA subscribers.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime, timezone
+
+from fastapi import WebSocket
+
+from src.shared.models import AttentionEvent, AttentionSession, AttentionState
+
+logger = logging.getLogger(__name__)
+
+
+class AttentionStore:
+    """Aggregates attention sessions from all connected daemons.
+
+    Sessions are keyed by ``session_id`` and updated via :meth:`handle_event`.
+    WebSocket subscribers receive real-time broadcasts of all events.
+    """
+
+    def __init__(self) -> None:
+        self._sessions: dict[str, AttentionSession] = {}
+        self._subscribers: list[WebSocket] = []
+
+    # ------------------------------------------------------------------
+    # Event handling
+    # ------------------------------------------------------------------
+
+    def handle_event(self, machine_id: str, event: dict) -> None:
+        """Process an attention event from a daemon.
+
+        Parameters
+        ----------
+        machine_id:
+            The machine that sent the event.
+        event:
+            Dict with ``type`` (``new_session``, ``state_changed``, or
+            ``session_ended``) and ``session`` (dict or AttentionSession).
+        """
+        event_type = event.get("type", "")
+        session_data = event.get("session")
+
+        if session_data is None:
+            logger.warning("Attention event from %s has no session data", machine_id)
+            return
+
+        # Normalise to AttentionSession
+        if isinstance(session_data, dict):
+            session = AttentionSession(**session_data)
+        else:
+            session = session_data
+
+        if event_type in ("new_session", "state_changed"):
+            self._sessions[session.session_id] = session
+        elif event_type == "session_ended":
+            self._sessions.pop(session.session_id, None)
+        else:
+            logger.warning("Unknown attention event type %r from %s", event_type, machine_id)
+
+    # ------------------------------------------------------------------
+    # Queries
+    # ------------------------------------------------------------------
+
+    def get_all_sessions(self) -> list[AttentionSession]:
+        """Return a list of all tracked sessions."""
+        return list(self._sessions.values())
+
+    def get_waiting_sessions(self) -> list[AttentionSession]:
+        """Return only sessions in the WAITING state."""
+        return [s for s in self._sessions.values() if s.state == AttentionState.WAITING]
+
+    def get_session(self, session_id: str) -> AttentionSession | None:
+        """Look up a single session by its ID."""
+        return self._sessions.get(session_id)
+
+    # ------------------------------------------------------------------
+    # WebSocket subscription
+    # ------------------------------------------------------------------
+
+    def subscribe(self, ws: WebSocket) -> None:
+        """Register a WebSocket connection for event broadcasts."""
+        self._subscribers.append(ws)
+
+    def unsubscribe(self, ws: WebSocket) -> None:
+        """Remove a WebSocket connection from the subscriber list."""
+        try:
+            self._subscribers.remove(ws)
+        except ValueError:
+            pass
+
+    async def broadcast(self, event: dict) -> None:
+        """Send *event* to all WebSocket subscribers.
+
+        Dead connections are silently removed from the subscriber list.
+        """
+        dead: list[WebSocket] = []
+        payload = json.dumps(event)
+
+        for ws in self._subscribers:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                dead.append(ws)
+
+        for ws in dead:
+            try:
+                self._subscribers.remove(ws)
+            except ValueError:
+                pass

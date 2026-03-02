@@ -229,3 +229,124 @@ async def test_route_chat_unknown_machine(client, registry):
     assert resp.status_code == 200
     assert data["status"] == "error"
     assert "laptop" in data["error"]
+
+
+# --- Push model: receive endpoints ---
+
+
+async def test_receive_feedback(client, registry):
+    """POST /api/missions/{id}/feedback stores feedback in mission_store."""
+    await _register_machines(registry)
+
+    app_state = client._transport.app.state
+    app_state.mission_store["m-fb-1"] = [{
+        "from_agent": "vps/proj", "to_agent": "laptop/proj",
+        "type": "ask", "mission_id": "m-fb-1",
+    }]
+
+    body = json.dumps({
+        "machine_id": "laptop",
+        "feedback": [
+            {"timestamp": "2026-03-01T10:00:30Z", "kind": "tool", "summary": "Reading config.py"},
+        ],
+        "turn_count": 2,
+        "status": "running",
+    }).encode()
+    headers = sign_request(body, "laptop", "tok-laptop")
+
+    resp = await client.post("/api/missions/m-fb-1/feedback", content=body, headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+
+    history = app_state.mission_store["m-fb-1"]
+    feedback_entry = [m for m in history if m.get("type") == "feedback"]
+    assert len(feedback_entry) == 1
+    assert feedback_entry[0]["payload"]["turn_count"] == 2
+
+
+async def test_receive_result(client, registry):
+    """POST /api/missions/{id}/result stores final result in mission_store."""
+    await _register_machines(registry)
+
+    app_state = client._transport.app.state
+    app_state.mission_store["m-res-1"] = [{
+        "from_agent": "vps/proj", "to_agent": "laptop/proj",
+        "type": "ask", "mission_id": "m-res-1",
+    }]
+
+    body = json.dumps({
+        "machine_id": "laptop",
+        "status": "completed",
+        "output": "Done! Here is the result.",
+        "feedback": [],
+        "started_at": "2026-03-01T10:00:00Z",
+        "finished_at": "2026-03-01T10:05:00Z",
+        "turn_count": 5,
+    }).encode()
+    headers = sign_request(body, "laptop", "tok-laptop")
+
+    resp = await client.post("/api/missions/m-res-1/result", content=body, headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+
+    history = app_state.mission_store["m-res-1"]
+    result_entry = [m for m in history if m.get("type") == "result"]
+    assert len(result_entry) == 1
+    assert result_entry[0]["payload"]["status"] == "completed"
+    assert result_entry[0]["payload"]["output"] == "Done! Here is the result."
+
+
+async def test_receive_result_unknown_mission(client, registry):
+    """POST /api/missions/{id}/result for unknown mission returns 404."""
+    await _register_machines(registry)
+
+    body = json.dumps({
+        "machine_id": "laptop",
+        "status": "completed",
+        "output": "orphan result",
+        "feedback": [],
+        "started_at": "2026-03-01T10:00:00Z",
+        "finished_at": "2026-03-01T10:05:00Z",
+        "turn_count": 1,
+    }).encode()
+    headers = sign_request(body, "laptop", "tok-laptop")
+
+    resp = await client.post("/api/missions/m-unknown/result", content=body, headers=headers)
+    assert resp.status_code == 404
+
+
+async def test_mission_status_from_store(client, registry):
+    """GET /api/missions/{id}/status returns data from mission_store."""
+    app_state = client._transport.app.state
+    app_state.mission_store["m-st-1"] = [
+        {"from_agent": "vps/proj", "to_agent": "laptop/proj", "type": "ask", "mission_id": "m-st-1"},
+        {"type": "result", "payload": {
+            "status": "completed",
+            "output": "All done",
+            "feedback": [{"timestamp": "...", "kind": "tool", "summary": "test"}],
+            "started_at": "2026-03-01T10:00:00Z",
+            "finished_at": "2026-03-01T10:05:00Z",
+            "turn_count": 3,
+        }},
+    ]
+
+    resp = await client.get("/api/missions/m-st-1/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "completed"
+    assert data["output"] == "All done"
+    assert data["turn_count"] == 3
+
+
+async def test_mission_status_launched(client, registry):
+    """GET /api/missions/{id}/status for just-launched mission returns launched."""
+    app_state = client._transport.app.state
+    app_state.mission_store["m-new-1"] = [
+        {"from_agent": "vps/proj", "to_agent": "laptop/proj", "type": "ask", "mission_id": "m-new-1"},
+    ]
+
+    resp = await client.get("/api/missions/m-new-1/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "launched"
+    assert data["turn_count"] == 0

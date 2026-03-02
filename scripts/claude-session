@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# claude-session: Launch Claude Code inside a named tmux session.
+# Usage: claude-session <name> [claude-args...]
+set -euo pipefail
+
+if [ $# -lt 1 ]; then
+    echo "Usage: claude-session <name> [claude-args...]"
+    echo "Example: claude-session serverlab"
+    echo "         claude-session myproject --continue"
+    exit 1
+fi
+
+SESSION_NAME="$1"
+shift
+TMUX_NAME="cc-${SESSION_NAME}"
+
+export SESSION_NAME="$SESSION_NAME"
+
+if tmux has-session -t "$TMUX_NAME" 2>/dev/null; then
+    echo "Session '$TMUX_NAME' already exists. Attaching..."
+    exec tmux attach-session -t "$TMUX_NAME"
+fi
+
+exec tmux new-session -s "$TMUX_NAME" "SESSION_NAME='$SESSION_NAME' claude $*"

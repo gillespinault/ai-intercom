@@ -107,3 +107,74 @@ class ThreadMessage(BaseModel):
     timestamp: str
     message: str
     read: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Attention Hub models
+# ---------------------------------------------------------------------------
+
+
+class AttentionState(StrEnum):
+    WORKING = "working"
+    THINKING = "thinking"
+    WAITING = "waiting"
+    ENDED = "ended"
+
+
+class PromptType(StrEnum):
+    PERMISSION = "permission"
+    QUESTION = "question"
+    TEXT_INPUT = "text_input"
+
+
+class PromptChoice(BaseModel):
+    key: str
+    label: str
+
+
+class DetectedPrompt(BaseModel):
+    type: PromptType
+    raw_text: str = ""
+    tool: str | None = None
+    command_preview: str | None = None
+    question: str | None = None
+    choices: list[PromptChoice] = Field(default_factory=list)
+    allows_free_text: bool = False
+
+
+class AttentionHeartbeat(BaseModel):
+    """Written by PostToolUse hook to /tmp/cc-sessions/{pid}."""
+    pid: int
+    session_id: str
+    session_name: str = ""
+    machine: str
+    project: str
+    last_tool: str = ""
+    last_tool_time: str = ""
+    tmux_session: str = ""
+    rc_url: str | None = None
+
+
+class AttentionSession(BaseModel):
+    """Aggregated session state tracked by the hub."""
+    session_id: str
+    machine: str
+    project: str
+    session_name: str = ""
+    pid: int
+    state: AttentionState = AttentionState.WORKING
+    state_since: str = ""
+    last_tool: str = ""
+    last_tool_time: str = ""
+    rc_url: str | None = None
+    idle_seconds: int = 0
+    prompt: DetectedPrompt | None = None
+    tmux_session: str = ""
+
+
+class AttentionEvent(BaseModel):
+    """Event sent over WebSocket to the PWA."""
+    type: str
+    session: AttentionSession | None = None
+    sessions: list[AttentionSession] | None = None
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())

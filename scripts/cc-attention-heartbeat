@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# cc-attention-heartbeat: Called by Claude Code PostToolUse hook.
+# Writes a heartbeat JSON file to /tmp/cc-sessions/{pid}.
+set -euo pipefail
+
+SESSIONS_DIR="/tmp/cc-sessions"
+mkdir -p "$SESSIONS_DIR"
+
+PID="${PPID}"
+SESSION_ID="${CLAUDE_SESSION_ID:-unknown-$$}"
+PROJECT="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+TOOL_NAME="${CLAUDE_TOOL_NAME:-unknown}"
+TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# Detect machine ID from intercom config or hostname
+MACHINE="$(hostname -s)"
+if [ -f "$HOME/.config/ai-intercom/config.yml" ]; then
+    MACHINE_FROM_CONFIG="$(grep -oP '^\s*id:\s*"\K[^"]+' "$HOME/.config/ai-intercom/config.yml" 2>/dev/null || true)"
+    [ -n "$MACHINE_FROM_CONFIG" ] && MACHINE="$MACHINE_FROM_CONFIG"
+fi
+
+# Detect tmux session name
+TMUX_SESSION=""
+if [ -n "${TMUX:-}" ]; then
+    TMUX_SESSION="$(tmux display-message -p '#S' 2>/dev/null || true)"
+fi
+
+SESSION_NAME="${SESSION_NAME:-$(basename "$PROJECT")}"
+
+# Write heartbeat atomically
+TMPFILE="$(mktemp "$SESSIONS_DIR/.heartbeat.XXXXXX")"
+cat > "$TMPFILE" << ENDJSON
+{
+  "pid": $PID,
+  "session_id": "$SESSION_ID",
+  "session_name": "$SESSION_NAME",
+  "machine": "$MACHINE",
+  "project": "$PROJECT",
+  "last_tool": "$TOOL_NAME",
+  "last_tool_time": "$TIMESTAMP",
+  "tmux_session": "$TMUX_SESSION"
+}
+ENDJSON
+
+mv "$TMPFILE" "$SESSIONS_DIR/$PID.json"

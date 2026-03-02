@@ -74,8 +74,8 @@ class IntercomTools:
     async def status(self, mission_id: str) -> dict:
         return await self.hub_client.get_status(mission_id=mission_id)
 
-    async def daemon_status(self, mission_id: str) -> dict:
-        return await self.hub_client.get_daemon_mission_status(mission_id=mission_id)
+    async def hub_mission_status(self, mission_id: str) -> dict:
+        return await self.hub_client.get_mission_status(mission_id=mission_id)
 
     async def history(self, mission_id: str, limit: int = 50) -> dict:
         return await self.hub_client.get_history(
@@ -200,7 +200,8 @@ def create_mcp_server(tools: IntercomTools) -> FastMCP:
         """Send a message and wait for a response from another agent.
 
         Returns immediately with a mission_id. Use intercom_status(mission_id)
-        to poll for completion and retrieve the agent's output.
+        to poll for completion and retrieve the agent's output. Status values:
+        "launched", "running", "completed", "failed".
 
         Args:
             to: Target agent ID (machine/project). Use intercom_list_agents to discover.
@@ -245,14 +246,8 @@ def create_mcp_server(tools: IntercomTools) -> FastMCP:
         Args:
             mission_id: The mission ID to check.
         """
-        # Try daemon-level status first (has output), fall back to hub history
-        try:
-            result = await tools.daemon_status(mission_id=mission_id)
-            if result.get("status") != "unreachable":
-                return result
-        except Exception:
-            pass
-        return await tools.status(mission_id=mission_id)
+        # Reads directly from Hub mission_store (push model)
+        return await tools.hub_mission_status(mission_id=mission_id)
 
     @mcp.tool()
     async def intercom_history(mission_id: str, limit: int = 50) -> dict:

@@ -259,4 +259,42 @@ def create_app(machine_id: str, token: str) -> FastAPI:
             "inbox_pending": inbox_pending,
         }
 
+    # --- Attention Hub endpoints ---
+
+    @app.get("/api/attention/sessions")
+    async def attention_sessions():
+        """List attention-tracked sessions on this machine."""
+        monitor = getattr(app.state, "attention_monitor", None)
+        if not monitor:
+            return {"sessions": []}
+        return {"sessions": [s.model_dump() for s in monitor.get_sessions()]}
+
+    @app.post("/api/attention/respond")
+    async def attention_respond(request: Request):
+        """Inject a response into a Claude Code session via tmux send-keys."""
+        data = await request.json()
+        tmux_session = data.get("tmux_session", "")
+        keys = data.get("keys", "")
+        if not tmux_session or not keys:
+            return Response(status_code=400, content="tmux_session and keys required")
+
+        monitor = getattr(app.state, "attention_monitor", None)
+        if not monitor:
+            return Response(status_code=503, content="Attention monitor not running")
+
+        success = monitor._inject_response(tmux_session, keys)
+        return {"status": "sent" if success else "failed", "tmux_session": tmux_session}
+
+    @app.get("/api/attention/terminal/{tmux_session:path}")
+    async def attention_terminal(tmux_session: str):
+        """Capture terminal content from a tmux session."""
+        monitor = getattr(app.state, "attention_monitor", None)
+        if not monitor:
+            return Response(status_code=503, content="Attention monitor not running")
+
+        content = monitor._capture_terminal(tmux_session)
+        if content is None:
+            return Response(status_code=404, content="tmux session not found")
+        return {"tmux_session": tmux_session, "content": content}
+
     return app

@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -72,11 +73,13 @@ class AgentLauncher:
         default_args: list[str],
         allowed_paths: list[str],
         max_duration: int,
+        hub_client: Any = None,
     ):
         self.default_command = default_command
         self.default_args = default_args
         self.allowed_paths = [Path(p).resolve() for p in allowed_paths]
         self.max_duration = max_duration
+        self.hub_client = hub_client
         self._active: dict[str, asyncio.subprocess.Process] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._results: dict[str, MissionResult] = {}
@@ -308,6 +311,27 @@ class AgentLauncher:
         self._tasks[mission_id] = task
         return mission_id
 
+    async def _feedback_pusher(self, mission_id: str) -> None:
+        """Background task: push feedback batch to Hub every 30s."""
+        cursor = 0
+        while mission_id in self._results and self._results[mission_id].status == "running":
+            await asyncio.sleep(30)
+            result = self._results.get(mission_id)
+            if not result or result.status != "running":
+                break
+            new_feedback = result.feedback[cursor:]
+            if new_feedback and self.hub_client:
+                try:
+                    await self.hub_client.push_feedback(
+                        mission_id=mission_id,
+                        feedback=[{"timestamp": f.timestamp, "kind": f.kind, "summary": f.summary} for f in new_feedback],
+                        turn_count=result.turn_count,
+                        status="running",
+                    )
+                    cursor += len(new_feedback)
+                except Exception as e:
+                    logger.warning("Failed to push feedback for %s: %s", mission_id, e)
+
     async def _run_agent(
         self,
         mission_id: str,
@@ -318,6 +342,12 @@ class AgentLauncher:
     ) -> None:
         """Execute agent in background, store result when done."""
         result = self._results[mission_id]
+
+        # Start feedback pusher if hub_client is available
+        fb_task = None
+        if self.hub_client:
+            fb_task = asyncio.create_task(self._feedback_pusher(mission_id))
+
         try:
             output = await self.launch_streaming(
                 mission=mission,
@@ -337,6 +367,29 @@ class AgentLauncher:
         finally:
             result.finished_at = _now()
             self._tasks.pop(mission_id, None)
+
+            # Cancel feedback pusher
+            if fb_task:
+                fb_task.cancel()
+                try:
+                    await fb_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Push final result to Hub
+            if self.hub_client:
+                try:
+                    await self.hub_client.push_result(
+                        mission_id=mission_id,
+                        status=result.status,
+                        output=result.output,
+                        feedback=[{"timestamp": f.timestamp, "kind": f.kind, "summary": f.summary} for f in result.feedback],
+                        started_at=result.started_at,
+                        finished_at=result.finished_at,
+                        turn_count=result.turn_count,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to push result for %s: %s", mission_id, e)
 
     def get_status(self, mission_id: str) -> MissionResult | None:
         """Get the current status of a mission."""

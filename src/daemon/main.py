@@ -44,15 +44,6 @@ async def run_daemon(config: IntercomConfig) -> None:
     app = create_app(machine_id=config.machine_id, token=token)
     _daemon_app = app
 
-    launcher_cfg = config.agent_launcher
-    launcher = AgentLauncher(
-        default_command=launcher_cfg.get("default_command", "claude"),
-        default_args=launcher_cfg.get("default_args", ["-p"]),
-        allowed_paths=launcher_cfg.get("allowed_paths", []),
-        max_duration=launcher_cfg.get("max_mission_duration", 1800),
-    )
-    app.state.launcher = launcher
-
     # Build project_paths mapping for agent launching
     projects = config.projects
     if not projects:
@@ -62,7 +53,7 @@ async def run_daemon(config: IntercomConfig) -> None:
     app.state.project_paths = {p["id"]: p.get("path", ".") for p in projects}
     logger.info("Project paths: %s", app.state.project_paths)
 
-    # Register with hub
+    # Register with hub and create hub_client
     hub_url = config.hub.get("url", "")
     ip_override = config.machine.get("tailscale_ip", "")
     if hub_url:
@@ -71,6 +62,30 @@ async def run_daemon(config: IntercomConfig) -> None:
         asyncio.create_task(_heartbeat_loop(hub_url, config.machine_id, token, daemon_port, ip_override))
     else:
         daemon_port = config.hub.get("daemon_port", 7700)
+
+    from src.daemon.hub_client import HubClient
+    hub_client = HubClient(hub_url=hub_url, token=token, machine_id=config.machine_id) if hub_url else None
+
+    # Create launcher with hub_client for push model
+    launcher_cfg = config.agent_launcher
+    launcher = AgentLauncher(
+        default_command=launcher_cfg.get("default_command", "claude"),
+        default_args=launcher_cfg.get("default_args", ["-p"]),
+        allowed_paths=launcher_cfg.get("allowed_paths", []),
+        max_duration=launcher_cfg.get("max_mission_duration", 1800),
+        hub_client=hub_client,
+    )
+    app.state.launcher = launcher
+
+    # Start attention monitor
+    from src.daemon.attention_monitor import AttentionMonitor
+    attention_monitor = AttentionMonitor(
+        machine_id=config.machine_id,
+        hub_client=hub_client,
+    )
+    app.state.attention_monitor = attention_monitor
+    asyncio.create_task(attention_monitor.run())
+
     server = uvicorn.Server(
         uvicorn.Config(app, host="0.0.0.0", port=daemon_port, log_level="info")
     )

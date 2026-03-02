@@ -40,8 +40,8 @@ async def test_ask_returns_immediately_with_mission_id(tools):
     result = await tools.ask(to="vps/nginx", message="do something", timeout=60)
     assert result["status"] == "launched"
     assert result["mission_id"] == "m-launch-1"
-    # No polling should happen
-    tools.hub_client.get_daemon_mission_status.assert_not_called()
+    # ask() returns immediately, no further calls needed
+    tools.hub_client.get_mission_status.assert_not_called()
 
 
 async def test_ask_propagates_error(tools):
@@ -82,13 +82,16 @@ async def test_report_feedback(tools):
     )
 
 
-async def test_daemon_status(tools):
-    tools.hub_client.get_daemon_mission_status.return_value = {
+async def test_hub_mission_status(tools):
+    tools.hub_client.get_mission_status.return_value = {
         "mission_id": "m-001",
         "status": "running",
+        "turn_count": 3,
     }
-    result = await tools.daemon_status(mission_id="m-001")
+    result = await tools.hub_mission_status(mission_id="m-001")
     assert result["status"] == "running"
+    assert result["turn_count"] == 3
+    tools.hub_client.get_mission_status.assert_called_once_with(mission_id="m-001")
 
 
 class FakeHubClientChat:

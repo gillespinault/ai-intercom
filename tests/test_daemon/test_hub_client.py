@@ -67,3 +67,38 @@ async def test_route_reply(httpx_mock):
         message="reply here",
     )
     assert result["status"] == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_push_feedback(httpx_mock):
+    httpx_mock.add_response(
+        url="http://hub:7700/api/missions/m-001/feedback",
+        json={"status": "ok"},
+    )
+    client = HubClient("http://hub:7700", "token", "serverlab")
+    result = await client.push_feedback(
+        mission_id="m-001",
+        feedback=[{"timestamp": "2026-03-01T10:00:00Z", "kind": "tool", "summary": "Reading file"}],
+        turn_count=2,
+        status="running",
+    )
+    assert result["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_push_result(httpx_mock):
+    httpx_mock.add_response(
+        url="http://hub:7700/api/missions/m-002/result",
+        json={"status": "ok"},
+    )
+    client = HubClient("http://hub:7700", "token", "serverlab")
+    result = await client.push_result(
+        mission_id="m-002",
+        status="completed",
+        output="Agent finished successfully",
+        feedback=[],
+        started_at="2026-03-01T10:00:00Z",
+        finished_at="2026-03-01T10:05:00Z",
+        turn_count=5,
+    )
+    assert result["status"] == "ok"

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import secrets
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,17 +19,6 @@ from src.shared.config import IntercomConfig
 from src.shared.models import Message
 
 logger = logging.getLogger(__name__)
-
-
-def _format_elapsed(seconds: int) -> str:
-    """Format seconds into a human-readable string."""
-    if seconds < 60:
-        return f"{seconds}s"
-    minutes = seconds // 60
-    secs = seconds % 60
-    if secs:
-        return f"{minutes}m{secs:02d}s"
-    return f"{minutes}m"
 
 
 def create_hub_api(
@@ -53,6 +40,15 @@ def create_hub_api(
     app.state.mission_store: dict[str, list[dict]] = {}
     app.state.thread_store: dict[str, dict] = {}
     app.state.machine_sessions: dict[str, list] = {}
+
+    # --- Attention Hub ---
+    from src.hub.attention_store import AttentionStore
+    from src.hub.attention_api import create_attention_router, create_pwa_router
+
+    attention_store = AttentionStore()
+    app.state.attention_store = attention_store
+    app.include_router(create_attention_router(attention_store, registry))
+    app.include_router(create_pwa_router())
 
     # --- Auth helper ---
 
@@ -400,172 +396,164 @@ def create_hub_api(
 
         result = await app.state.router.route(msg)
 
-        # Track launched missions in background for Telegram feedback
-        resp_mission_id = result.get("mission_id", mission_id)
-        if result.get("status") == "launched" and telegram_bot:
-            to_agent = data.get("to_agent", "")
-            target_machine = to_agent.split("/")[0] if "/" in to_agent else to_agent
-            machine = await registry.get_machine(target_machine)
-            if machine:
-                asyncio.create_task(
-                    _track_mission_for_telegram(
-                        telegram_bot=telegram_bot,
-                        registry=registry,
-                        mission_id=resp_mission_id,
-                        daemon_url=machine["daemon_url"],
-                        target=to_agent,
-                        from_agent=from_agent,
-                    )
-                )
-
         return result
 
-    async def _track_mission_for_telegram(
-        telegram_bot,
-        registry,
-        mission_id: str,
-        daemon_url: str,
-        target: str,
-        from_agent: str,
-    ) -> None:
-        """Background task: poll daemon for mission result, post to Telegram + mission_store."""
-        t0 = time.monotonic()
-        poll_timeout = 600  # 10 minutes max for inter-agent missions
-        poll_interval = 10
-        fallback_interval = 60  # Generic progress if no feedback for 60s
-        elapsed = 0
-        feedback_cursor = 0
-        last_feedback_time = time.monotonic()
-        last_posted_summary = ""
+    # --- Push model: receive endpoints ---
 
-        # Post initial tracking message
-        await telegram_bot.post_text_to_mission(
-            mission_id,
-            f"\U0001f680 _Agent lance sur_ `{target}`",
-        )
+    @app.post("/api/missions/{mission_id}/feedback")
+    async def receive_feedback(mission_id: str, request: Request):
+        """Receive feedback batch from daemon (push model)."""
+        body = await request.body()
+        data = json.loads(body)
 
-        consecutive_not_found = 0
-        max_not_found = 6  # Give up after ~60s of 404s
+        machine_id = data.get("machine_id", "")
+        if machine_id and not await _verify_machine(request, body, machine_id):
+            return Response(status_code=401, content="Unauthorized")
 
-        while elapsed < poll_timeout:
-            await asyncio.sleep(poll_interval)
-            elapsed += poll_interval
+        history = app.state.mission_store.get(mission_id)
+        if history is None:
+            return Response(status_code=404, content="Mission not found")
 
+        history.append({
+            "type": "feedback",
+            "from_agent": machine_id,
+            "mission_id": mission_id,
+            "payload": {
+                "feedback": data.get("feedback", []),
+                "turn_count": data.get("turn_count", 0),
+                "status": data.get("status", "running"),
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+        if telegram_bot:
+            fb_items = data.get("feedback", [])
+            if fb_items:
+                lines = [f.get("summary", "") for f in fb_items[-5:]]
+                text = "\n".join(lines)
+                try:
+                    topic_id = getattr(telegram_bot, '_mission_topics', {}).get(mission_id)
+                    if topic_id:
+                        await telegram_bot.app.bot.send_message(
+                            chat_id=telegram_bot.supergroup_id,
+                            text=f"\u2699\ufe0f {text}\n_(turn {data.get('turn_count', '?')})_",
+                            message_thread_id=topic_id,
+                            parse_mode="Markdown",
+                        )
+                except Exception:
+                    pass
+
+        return {"status": "ok"}
+
+    @app.post("/api/missions/{mission_id}/result")
+    async def receive_result(mission_id: str, request: Request):
+        """Receive final mission result from daemon (push model)."""
+        body = await request.body()
+        data = json.loads(body)
+
+        machine_id = data.get("machine_id", "")
+        if machine_id and not await _verify_machine(request, body, machine_id):
+            return Response(status_code=401, content="Unauthorized")
+
+        history = app.state.mission_store.get(mission_id)
+        if history is None:
+            return Response(status_code=404, content="Mission not found")
+
+        history.append({
+            "type": "result",
+            "from_agent": machine_id,
+            "mission_id": mission_id,
+            "payload": {
+                "status": data.get("status", "completed"),
+                "output": data.get("output"),
+                "feedback": data.get("feedback", []),
+                "started_at": data.get("started_at"),
+                "finished_at": data.get("finished_at"),
+                "turn_count": data.get("turn_count", 0),
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+        if telegram_bot:
+            status_emoji = "\u2705" if data.get("status") == "completed" else "\u274c"
+            output = data.get("output", "")[:3500] if data.get("output") else ""
             try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    resp = await client.get(
-                        f"{daemon_url}/api/missions/{mission_id}",
-                        params={"feedback_since": feedback_cursor},
+                topic_id = getattr(telegram_bot, '_mission_topics', {}).get(mission_id)
+                if topic_id:
+                    await telegram_bot.app.bot.send_message(
+                        chat_id=telegram_bot.supergroup_id,
+                        text=f"{status_emoji} *Termine*\n\n{output}" if output else f"{status_emoji} *Termine*",
+                        message_thread_id=topic_id,
+                        parse_mode="Markdown",
                     )
+            except Exception:
+                pass
 
-                    # Handle 404: mission not found on daemon
-                    if resp.status_code == 404:
-                        consecutive_not_found += 1
-                        if consecutive_not_found >= max_not_found:
-                            logger.warning(
-                                "Mission %s: %d consecutive 404s from %s, giving up",
-                                mission_id, consecutive_not_found, daemon_url,
-                            )
-                            await telegram_bot.post_text_to_mission(
-                                mission_id,
-                                f"\u26a0\ufe0f _Mission introuvable sur_ `{target}` "
-                                f"_(daemon ne connait pas cette mission)_",
-                            )
-                            return
-                        continue
+        return {"status": "ok"}
 
-                    # Got a valid response, reset 404 counter
-                    consecutive_not_found = 0
+    @app.get("/api/missions/{mission_id}/status")
+    async def get_mission_status(mission_id: str):
+        """Get mission status from Hub mission_store (no daemon proxy)."""
+        # Check local launcher first (standalone mode)
+        if app.state.launcher:
+            result = app.state.launcher.get_status(mission_id)
+            if result:
+                return {
+                    "mission_id": mission_id,
+                    "status": result.status,
+                    "output": result.output,
+                    "feedback": [
+                        {"timestamp": f.timestamp, "kind": f.kind, "summary": f.summary}
+                        for f in result.feedback
+                    ],
+                    "started_at": result.started_at,
+                    "finished_at": result.finished_at,
+                    "turn_count": result.turn_count,
+                }
 
-                    try:
-                        status_data = resp.json()
-                    except Exception:
-                        logger.warning(
-                            "Mission %s: invalid JSON from daemon (HTTP %d)",
-                            mission_id, resp.status_code,
-                        )
-                        continue
+        # Check mission_store (push model)
+        history = app.state.mission_store.get(mission_id)
+        if history is None:
+            return Response(status_code=404, content="Mission not found")
 
-                    # Process new feedback items
-                    new_feedback = status_data.get("feedback", [])
-                    turn_count = status_data.get("turn_count", 0)
-                    if new_feedback:
-                        feedback_cursor = status_data.get("feedback_total", feedback_cursor)
-                        last_feedback_time = time.monotonic()
-                        # Deduplicate consecutive identical summaries
-                        unique = []
-                        for fb in new_feedback:
-                            s = fb.get("summary", "")
-                            if s != last_posted_summary:
-                                unique.append(s)
-                                last_posted_summary = s
-                        if unique:
-                            # Post last 5 activities + elapsed + turn count
-                            elapsed_str = _format_elapsed(elapsed)
-                            activities = "\n".join(unique[-5:])
-                            await telegram_bot.post_text_to_mission(
-                                mission_id,
-                                f"{activities}\n_({elapsed_str} \u2022 tour {turn_count})_",
-                            )
-                    elif time.monotonic() - last_feedback_time >= fallback_interval:
-                        # Fallback: no feedback for a while
-                        last_feedback_time = time.monotonic()
-                        elapsed_str = _format_elapsed(elapsed)
-                        await telegram_bot.post_text_to_mission(
-                            mission_id,
-                            f"\u2699\ufe0f _Agent en cours..._ ({elapsed_str})",
-                        )
+        result_entries = [m for m in history if m.get("type") == "result"]
+        if result_entries:
+            payload = result_entries[-1]["payload"]
+            return {
+                "mission_id": mission_id,
+                "status": payload.get("status", "completed"),
+                "output": payload.get("output"),
+                "feedback": payload.get("feedback", []),
+                "started_at": payload.get("started_at"),
+                "finished_at": payload.get("finished_at"),
+                "turn_count": payload.get("turn_count", 0),
+            }
 
-                    if status_data.get("status") in ("completed", "failed"):
-                        total = _format_elapsed(int(time.monotonic() - t0))
-                        status = status_data["status"]
-                        output = status_data.get("output", "")
+        feedback_entries = [m for m in history if m.get("type") == "feedback"]
+        if feedback_entries:
+            payload = feedback_entries[-1]["payload"]
+            all_feedback = []
+            for fe in feedback_entries:
+                all_feedback.extend(fe.get("payload", {}).get("feedback", []))
+            return {
+                "mission_id": mission_id,
+                "status": payload.get("status", "running"),
+                "output": None,
+                "feedback": all_feedback,
+                "started_at": None,
+                "finished_at": None,
+                "turn_count": payload.get("turn_count", 0),
+            }
 
-                        # Parse JSON output if present
-                        try:
-                            parsed = json.loads(output)
-                            output = parsed.get("result", output)
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-
-                        # Store result in mission_store for intercom_history
-                        if mission_id in app.state.mission_store:
-                            app.state.mission_store[mission_id].append({
-                                "from_agent": target,
-                                "to_agent": from_agent,
-                                "type": "result",
-                                "payload": {
-                                    "status": status,
-                                    "message": output[:10000] if output else "",
-                                },
-                                "mission_id": mission_id,
-                            })
-
-                        if status == "completed":
-                            header = f"\u2705 *Termine* ({total})"
-                        else:
-                            header = f"\u274c *Echec* ({total})"
-
-                        # Truncate if too long for Telegram
-                        tg_output = output
-                        if len(tg_output) > 3500:
-                            tg_output = tg_output[:3500] + "\n\n_... (tronque)_"
-
-                        await telegram_bot.post_text_to_mission(
-                            mission_id,
-                            f"{header}\n\n{tg_output}" if tg_output else header,
-                        )
-                        return
-            except Exception as e:
-                logger.debug("Mission %s: poll error: %s", mission_id, e)
-
-        # Timeout
-        total = _format_elapsed(int(time.monotonic() - t0))
-        await telegram_bot.post_text_to_mission(
-            mission_id,
-            f"\u23f0 _Agent toujours en cours apres {total}_\n"
-            f"Mission ID: `{mission_id}`",
-        )
+        return {
+            "mission_id": mission_id,
+            "status": "launched",
+            "output": None,
+            "feedback": [],
+            "started_at": None,
+            "finished_at": None,
+            "turn_count": 0,
+        }
 
     # --- Mission queries ---
 
@@ -669,68 +657,6 @@ def create_hub_api(
                 }
 
         return {"status": "received", "mission_id": mission_id}
-
-    @app.get("/api/missions/{mission_id}/daemon-status")
-    async def get_daemon_mission_status(mission_id: str):
-        """Proxy mission status from the daemon running the mission.
-
-        First checks the local launcher (standalone mode), then looks up
-        the mission in mission_store to find the target daemon.
-        """
-        # Check local launcher first (standalone mode)
-        if app.state.launcher:
-            result = app.state.launcher.get_status(mission_id)
-            if result:
-                return {
-                    "mission_id": mission_id,
-                    "status": result.status,
-                    "output": result.output,
-                    "started_at": result.started_at,
-                    "finished_at": result.finished_at,
-                    "feedback": [
-                        {"timestamp": f.timestamp, "kind": f.kind, "summary": f.summary}
-                        for f in result.feedback
-                    ],
-                    "feedback_total": len(result.feedback),
-                    "turn_count": result.turn_count,
-                }
-
-        # Look up mission in store to find target machine
-        history = app.state.mission_store.get(mission_id)
-        if not history:
-            return Response(status_code=404, content="Mission not found")
-
-        # Find target machine from the last message
-        last_msg = history[-1]
-        to_agent = last_msg.get("to_agent", "")
-        machine_id = to_agent.split("/")[0] if "/" in to_agent else to_agent
-
-        machine = await registry.get_machine(machine_id)
-        if not machine:
-            return Response(status_code=404, content=f"Machine {machine_id} not found")
-
-        # Forward status request to the daemon
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(
-                    f"{machine['daemon_url']}/api/missions/{mission_id}"
-                )
-                if resp.status_code == 404:
-                    return {
-                        "mission_id": mission_id,
-                        "status": "not_found",
-                        "error": f"Mission not found on {machine_id} daemon (may have expired)",
-                    }
-                try:
-                    return resp.json()
-                except Exception:
-                    return {
-                        "mission_id": mission_id,
-                        "status": "parse_error",
-                        "error": f"Invalid response from daemon (HTTP {resp.status_code})",
-                    }
-        except Exception as e:
-            return {"mission_id": mission_id, "status": "unreachable", "error": str(e)}
 
     # --- Feedback ---
 

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#e94560">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Attention Hub</title>
+
+  <link rel="manifest" href="/attention/manifest.json">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="/attention/styles.css">
+
+  <!-- xterm.js CSS (preloaded for terminal views) -->
+  <link rel="preload" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.min.css" as="style" onload="this.onload=null;this.rel='stylesheet'">
+  <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.min.css"></noscript>
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-brand">Attention<span>Hub</span></div>
+
+    <nav id="mode-tabs" class="mode-tabs" aria-label="View mode">
+      <button class="mode-tab" data-mode="actions" aria-selected="true" type="button">Actions</button>
+      <button class="mode-tab" data-mode="terminals" aria-selected="false" type="button">Terminals</button>
+      <button class="mode-tab" data-mode="split" aria-selected="false" type="button">Split</button>
+    </nav>
+
+    <div class="header-right">
+      <div id="conn-dot" class="conn-dot disconnected" title="Connection status"></div>
+      <button id="btn-settings" class="btn-icon" type="button" aria-label="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main content area (populated by app.js) -->
+  <main id="content" class="main main-content view-actions"></main>
+
+  <!-- Preferences panel -->
+  <div id="prefs-backdrop" class="prefs-backdrop" aria-hidden="true"></div>
+  <aside id="prefs-panel" class="prefs-panel" aria-label="Preferences">
+    <div class="prefs-title">Preferences</div>
+
+    <div class="prefs-section">
+      <div class="prefs-label">Notifications</div>
+      <div class="prefs-row">
+        <span class="prefs-row-text">Push notifications</span>
+        <label class="toggle">
+          <input type="checkbox" id="pref-push">
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+      <div class="prefs-row">
+        <span class="prefs-row-text">Sound alerts</span>
+        <label class="toggle">
+          <input type="checkbox" id="pref-sound">
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+      <div class="prefs-row">
+        <span class="prefs-row-text">Vibration</span>
+        <label class="toggle">
+          <input type="checkbox" id="pref-vibrate" checked>
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="prefs-section">
+      <div class="prefs-label">Show prompt types</div>
+      <div class="prefs-row">
+        <span class="prefs-row-text">Permission prompts</span>
+        <label class="toggle">
+          <input type="checkbox" id="pref-permission" checked>
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+      <div class="prefs-row">
+        <span class="prefs-row-text">Question prompts</span>
+        <label class="toggle">
+          <input type="checkbox" id="pref-question" checked>
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+      <div class="prefs-row">
+        <span class="prefs-row-text">Text input prompts</span>
+        <label class="toggle">
+          <input type="checkbox" id="pref-text-input" checked>
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="prefs-section">
+      <div class="prefs-label">Show session states</div>
+      <div class="prefs-row">
+        <span class="prefs-row-text">Working sessions</span>
+        <label class="toggle">
+          <input type="checkbox" id="pref-working">
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+      <div class="prefs-row">
+        <span class="prefs-row-text">Thinking sessions</span>
+        <label class="toggle">
+          <input type="checkbox" id="pref-thinking" checked>
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="prefs-section">
+      <div class="prefs-label">Display</div>
+      <div class="prefs-row">
+        <span class="prefs-row-text">Auto-scroll terminals</span>
+        <label class="toggle">
+          <input type="checkbox" id="pref-autoscroll" checked>
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+      <div class="prefs-row">
+        <span class="prefs-row-text">Show idle timers</span>
+        <label class="toggle">
+          <input type="checkbox" id="pref-idle" checked>
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+    </div>
+  </aside>
+
+  <!-- xterm.js (deferred, used by terminal views) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.min.js"></script>
+
+  <!-- Application -->
+  <script defer src="/attention/terminal.js"></script>
+  <script defer src="/attention/app.js"></script>
+
+</body>
+</html>
