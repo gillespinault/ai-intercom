@@ -14,6 +14,7 @@ from src.hub.approval import ApprovalEngine, ApprovalLevel
 from src.hub.registry import Registry
 from src.hub.router import Router
 from src.hub.telegram_bot import TelegramBot, parse_start_command
+from src.hub.voice_services import VoiceConfig, parse_voice_config, synthesize
 from src.shared.auth import sign_request
 from src.shared.config import IntercomConfig
 from src.shared.models import Message
@@ -338,6 +339,15 @@ async def run_hub(config: IntercomConfig) -> None:
         except (json.JSONDecodeError, TypeError):
             pass
 
+        # Strip internal reasoning blocks (★ Insight ──... ──...)
+        import re as _re
+        output = _re.sub(
+            r"`*★[^\n]*─+`*\n.*?\n`*─+`*\n*",
+            "",
+            output,
+            flags=_re.DOTALL,
+        ).strip()
+
         # Build final message with status header
         status = result.get("status", "unknown")
         if status == "completed":
@@ -368,6 +378,30 @@ async def run_hub(config: IntercomConfig) -> None:
                 logger.warning("Failed to edit thinking message: %s", e)
                 await update.message.reply_text(full_output)
 
+        # TTS: send voice response if the original message was a voice message
+        if (
+            voice_config.enabled
+            and voice_config.response_voice
+            and voice_config.tts_url
+            and update.message
+            and update.message.voice
+            and status == "completed"
+            and output
+        ):
+            try:
+                import re as _re
+                clean_text = _re.sub(r"[*_`\[\]()~>#+=|{}\\\-]", "", output)
+                clean_text = clean_text[:2000]
+                ogg_data = await synthesize(clean_text, voice_config)
+                await update.message.reply_voice(voice=ogg_data)
+            except Exception:
+                logger.exception("TTS response failed (text already sent)")
+
+    # Voice services
+    voice_config = parse_voice_config(config.voice)
+    if voice_config.enabled:
+        logger.info("Voice services enabled (STT: %s, TTS: %s)", voice_config.stt_url, voice_config.tts_url)
+
     # Telegram bot
     tg_config = config.telegram
     bot = TelegramBot(
@@ -379,6 +413,7 @@ async def run_hub(config: IntercomConfig) -> None:
         on_approval_response=on_approval_response,
         on_dispatch=on_dispatch,
         dashboard_url=config.hub.get("dashboard_url", ""),
+        voice_config=voice_config,
     )
 
     # Router

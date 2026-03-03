@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.hub.telegram_bot import TelegramBot, format_agent_message, parse_start_command
+from src.hub.voice_services import VoiceConfig
 
 
 def test_format_agent_message():
@@ -148,3 +149,86 @@ class TestSendAttentionNotification:
         await bot.send_attention_notification(session)
 
         bot.app.bot.send_message.assert_not_called()
+
+
+class TestHandleVoice:
+    @pytest.fixture
+    def bot_with_voice(self):
+        with patch("src.hub.telegram_bot.Application") as MockApp:
+            mock_app = MagicMock()
+            MockApp.builder.return_value.token.return_value.build.return_value = mock_app
+            mock_app.add_handler = MagicMock()
+            vc = VoiceConfig(enabled=True, stt_url="http://stt:8432/v1/stt")
+            return TelegramBot(
+                bot_token="fake-token",
+                supergroup_id=-100123,
+                allowed_users=[42],
+                voice_config=vc,
+                on_dispatch=AsyncMock(),
+            )
+
+    @pytest.fixture
+    def bot_no_voice(self):
+        with patch("src.hub.telegram_bot.Application") as MockApp:
+            mock_app = MagicMock()
+            MockApp.builder.return_value.token.return_value.build.return_value = mock_app
+            mock_app.add_handler = MagicMock()
+            return TelegramBot(
+                bot_token="fake-token",
+                supergroup_id=-100123,
+                allowed_users=[42],
+            )
+
+    @pytest.mark.asyncio
+    async def test_voice_disabled(self, bot_no_voice):
+        """Voice handler replies with 'not active' when voice is not configured."""
+        update = MagicMock()
+        update.effective_user.id = 42
+        update.message.reply_text = AsyncMock()
+        update.message.chat.send_action = AsyncMock()
+        context = MagicMock()
+
+        await bot_no_voice._handle_voice(update, context)
+
+        update.message.reply_text.assert_called_once()
+        assert "non active" in update.message.reply_text.call_args[0][0].lower()
+
+    @pytest.mark.asyncio
+    async def test_voice_unauthorized(self, bot_with_voice):
+        """Unauthorized users get no response to voice messages."""
+        update = MagicMock()
+        update.effective_user.id = 999
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+
+        await bot_with_voice._handle_voice(update, context)
+
+        update.message.reply_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_voice_success(self, bot_with_voice):
+        """Successful voice transcription sends text and dispatches."""
+        update = MagicMock()
+        update.effective_user.id = 42
+        update.message.reply_text = AsyncMock()
+        update.message.chat.send_action = AsyncMock()
+
+        mock_file = AsyncMock()
+        mock_file.download_as_bytearray.return_value = bytearray(b"ogg-data")
+        update.message.voice.get_file = AsyncMock(return_value=mock_file)
+
+        context = MagicMock()
+
+        with patch("src.hub.telegram_bot.transcribe", new_callable=AsyncMock) as mock_tr:
+            mock_tr.return_value = "Bonjour"
+
+            await bot_with_voice._handle_voice(update, context)
+
+        # Should reply with transcription in italic
+        update.message.reply_text.assert_called_once()
+        assert "Bonjour" in update.message.reply_text.call_args[0][0]
+
+        # Should dispatch the transcribed text
+        bot_with_voice.on_dispatch.assert_called_once_with(
+            "Bonjour", update, context
+        )

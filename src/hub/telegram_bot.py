@@ -20,6 +20,7 @@ from telegram.ext import (
     filters,
 )
 
+from src.hub.voice_services import VoiceConfig, transcribe
 from src.shared.models import Message
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,7 @@ class TelegramBot:
         on_approval_response: Any = None,
         on_dispatch: Any = None,
         dashboard_url: str = "",
+        voice_config: VoiceConfig | None = None,
     ):
         self.supergroup_id = supergroup_id
         self.allowed_users = allowed_users
@@ -117,6 +119,7 @@ class TelegramBot:
         self.on_approval_response = on_approval_response
         self.on_dispatch = on_dispatch
         self.dashboard_url = dashboard_url
+        self.voice_config = voice_config
 
         self.app = Application.builder().token(bot_token).build()
         self._setup_handlers()
@@ -135,6 +138,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("policy", self._cmd_policy))
         self.app.add_handler(CommandHandler("attention", self._cmd_attention))
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))
+        self.app.add_handler(MessageHandler(filters.VOICE, self._handle_voice))
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message)
         )
@@ -438,3 +442,35 @@ class TelegramBot:
         if self.on_dispatch and update.message and update.message.text:
             await update.message.chat.send_action("typing")
             await self.on_dispatch(update.message.text, update, context)
+
+    async def _handle_voice(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle voice messages: transcribe via STT then dispatch as text."""
+        if not self._is_authorized(update.effective_user.id):
+            return
+
+        vc = self.voice_config
+        if not vc or not vc.enabled or not vc.stt_url:
+            await update.message.reply_text(
+                "Voice non active. Configurez la section `voice:` dans config.yml."
+            )
+            return
+
+        await update.message.chat.send_action("typing")
+
+        try:
+            voice = update.message.voice
+            voice_file = await voice.get_file()
+            ogg_bytes = bytes(await voice_file.download_as_bytearray())
+
+            text = await transcribe(ogg_bytes, vc.stt_url, vc.tts_language)
+            await update.message.reply_text(f"_{text}_", parse_mode="Markdown")
+
+            if self.on_dispatch:
+                await self.on_dispatch(text, update, context)
+        except Exception as e:
+            logger.exception("Voice transcription failed")
+            await update.message.reply_text(
+                f"Erreur transcription vocale : {e}"
+            )
