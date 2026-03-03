@@ -39,9 +39,9 @@ Fix : hub_epoch tracking — le hub assigne un epoch au démarrage, retourné da
 ~~Quand `UserPromptSubmit` fire, `cc-heartbeat.sh working` remet `notification_data` à vide.~~
 Fix dual : (1) `cc-heartbeat.sh` préserve `notification_data` du fichier existant lors des transitions `start|stop|working`, (2) `AttentionMonitor` cache le dernier prompt détecté par session et le réutilise lors des transitions hors WAITING.
 
-#### B3. Tmux requis pour interaction PWA complète
-Sans tmux, les sessions sont en mode "monitor only" (on détecte l'état mais on ne peut pas répondre depuis la PWA). Nécessite un wrapper tmux transparent.
-- Voir section "Tmux transparency" ci-dessous pour les solutions envisagées
+#### ~~B3. Tmux requis pour interaction PWA complète~~ → FERMÉ (limitation acceptée)
+~~Sans tmux, les sessions sont en mode "monitor only".~~
+Résolution : `claude-tmux.sh` wrapper disponible (v0.5.0) + `install.sh` configure l'alias automatiquement. Les sessions non-tmux restent en lecture seule dans la PWA mais affichent l'état et le prompt via `notification_data`. Comportement documenté, pas un bug.
 
 ---
 
