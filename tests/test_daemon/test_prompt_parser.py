@@ -106,6 +106,58 @@ class TestPermissionDetection:
         assert result.tool == "Bash"
         assert "docker compose" in (result.command_preview or "")
 
+    def test_modern_menu_choices(self):
+        """Modern Claude Code uses menu-style choices after Allow?."""
+        raw = (
+            "  Claude wants to execute a Bash command\n"
+            "  Command: ls -la\n"
+            "  Allow?\n"
+            "  ❯ Yes\n"
+            "    Yes, and don't ask again for Bash\n"
+            "    No, and tell Claude what to do instead\n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.PERMISSION
+        assert result.tool == "Bash"
+        assert len(result.choices) == 3
+        assert result.choices[0].key == "y"
+        assert result.choices[0].label == "Yes"
+        assert result.choices[1].key == "a"
+        assert "don't ask again" in result.choices[1].label.lower()
+        assert result.choices[2].key == "n"
+        assert result.choices[2].label.lower().startswith("no")
+
+    def test_modern_menu_without_indicator(self):
+        """Menu choices without the ❯ indicator."""
+        raw = (
+            "  Claude wants to edit a file\n"
+            "  File: src/main.py\n"
+            "  Allow?\n"
+            "  Yes\n"
+            "  Yes, and don't ask again for Edit\n"
+            "  No, and tell Claude what to do instead\n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.PERMISSION
+        assert len(result.choices) == 3
+        assert result.choices[0].key == "y"
+
+    def test_fallback_choices_when_none_parsed(self):
+        """Fallback to Yes/No when no choices can be parsed."""
+        raw = (
+            "  Claude wants to execute a Bash command\n"
+            "  Command: echo hello\n"
+            "  Allow?\n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.PERMISSION
+        assert len(result.choices) == 2
+        assert result.choices[0].key == "y"
+        assert result.choices[1].key == "n"
+
 
 # ---------------------------------------------------------------------------
 # Question detection
@@ -171,6 +223,207 @@ class TestQuestionDetection:
 
 
 # ---------------------------------------------------------------------------
+# SelectInput detection (Claude Code arrow-navigable menus)
+# ---------------------------------------------------------------------------
+
+
+class TestSelectInputDetection:
+    def test_basic_select_input(self):
+        """Standard Claude Code SelectInput: Do you want to proceed?"""
+        raw = (
+            "  Do you want to proceed?\n"
+            "  \u276f 1. Yes\n"
+            "    2. No\n"
+            "\n"
+            "  Esc to cancel \u00b7 Tab to amend \u00b7 ctrl+e to explain\n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.QUESTION
+        assert result.question == "Do you want to proceed?"
+        assert len(result.choices) == 2
+        assert result.choices[0].key == "select:0"  # ❯ on this option
+        assert result.choices[0].label == "Yes"
+        assert result.choices[1].key == "select:1"
+        assert result.choices[1].label == "No"
+
+    def test_select_input_with_context(self):
+        """SelectInput with context text above the question."""
+        raw = (
+            "  Command contains quoted characters in flag names\n"
+            "\n"
+            "  Do you want to proceed?\n"
+            "  \u276f 1. Yes\n"
+            "    2. No\n"
+            "\n"
+            "  Esc to cancel \u00b7 Tab to amend \u00b7 ctrl+e to explain\n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.QUESTION
+        assert result.question == "Do you want to proceed?"
+        assert result.command_preview is not None
+        assert "quoted characters" in result.command_preview
+
+    def test_select_input_second_focused(self):
+        """SelectInput where the second option is focused."""
+        raw = (
+            "  Continue with deletion?\n"
+            "    1. Yes\n"
+            "  \u276f 2. No\n"
+            "\n"
+            "  Esc to cancel\n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.choices[0].key == "select:-1"  # need to go Up from ❯
+        assert result.choices[1].key == "select:0"   # currently focused
+
+    def test_select_input_three_options(self):
+        """SelectInput with three options."""
+        raw = (
+            "  What should we do?\n"
+            "  \u276f 1. Continue\n"
+            "    2. Skip\n"
+            "    3. Abort\n"
+            "\n"
+            "  Esc to cancel\n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert len(result.choices) == 3
+        assert result.choices[0].key == "select:0"
+        assert result.choices[1].key == "select:1"
+        assert result.choices[2].key == "select:2"
+
+    def test_select_input_not_plain_numbered(self):
+        """SelectInput is NOT triggered by plain numbered options without ❯."""
+        raw = (
+            "  Which option?\n"
+            "  1. Option A\n"
+            "  2. Option B\n"
+            "  > "
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        # This should be a regular question, not SelectInput
+        assert result.choices[0].key == "1"  # numbered key, not select:
+
+    def test_select_input_real_terminal_capture(self):
+        """Test with text closely matching real tmux capture output."""
+        raw = (
+            "  Bash command\n"
+            "\n"
+            "   STORAGE_ID=$(docker ps --filter name=excalidraw_storage)\n"
+            "   echo \"test\"\n"
+            "\n"
+            " Command contains quoted characters in flag names\n"
+            "\n"
+            " Do you want to proceed?\n"
+            " \u276f 1. Yes\n"
+            "   2. No\n"
+            "\n"
+            " Esc to cancel \u00b7 Tab to amend \u00b7 ctrl+e to explain\n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.QUESTION
+        assert result.question == "Do you want to proceed?"
+        assert result.choices[0].key == "select:0"
+        assert result.choices[0].label == "Yes"
+        assert result.choices[1].key == "select:1"
+        assert result.choices[1].label == "No"
+
+    def test_select_input_with_tool_invocation(self):
+        """Extract command from ● Bash(command) format above SelectInput."""
+        raw = (
+            "● Bash(curl -s https://api.example.com/test)\n"
+            "\n"
+            "  Command contains $() command substitution\n"
+            "\n"
+            "  Do you want to proceed?\n"
+            "  \u276f 1. Yes\n"
+            "    2. No\n"
+            "\n"
+            "  Esc to cancel\n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.QUESTION
+        assert result.tool == "Bash"
+        assert result.command_preview == "curl -s https://api.example.com/test"
+        assert result.question == "Do you want to proceed?"
+
+    def test_select_input_edit_tool_invocation(self):
+        """Extract tool and path from ● Edit(/path/to/file)."""
+        raw = (
+            "● Edit(/home/user/src/main.py)\n"
+            "\n"
+            "  Do you want to proceed?\n"
+            "  \u276f 1. Yes\n"
+            "    2. No\n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.tool == "Edit"
+        assert result.command_preview == "/home/user/src/main.py"
+
+    def test_select_input_ignores_historical_numbered_lists(self):
+        """Only collect options from the contiguous block around ❯, not
+        from old numbered output higher up in the scroll buffer."""
+        raw = (
+            # Historical numbered list (NOT a SelectInput).
+            "  Pour tester, tu as deux options :\n"
+            "\n"
+            "  1. Fenêtre privée/incognito → ouvre l'URL\n"
+            "  2. Vider le service worker via DevTools\n"
+            "\n"
+            # Lots of other output...
+            "● Claude did something\n"
+            "  ⎿  Result here\n"
+            "\n"
+            # Actual current SelectInput at the bottom.
+            " Do you want to proceed?\n"
+            " \u276f 1. Yes\n"
+            "   2. No\n"
+            "\n"
+            " Esc to cancel · Tab to amend · ctrl+e to explain\n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.QUESTION
+        # Should only have 2 choices (Yes/No), NOT the historical ones.
+        assert len(result.choices) == 2
+        assert result.choices[0].label == "Yes"
+        assert result.choices[1].label == "No"
+
+    def test_idle_prompt_after_historical_select_input(self):
+        """If the terminal has an old SelectInput in history but
+        the current bottom shows an idle ❯ prompt, return text_input."""
+        # Build enough filler lines (>30) to push the SelectInput
+        # out of the bottom search window.
+        filler = "".join(
+            f"● Step {i}\n  ⎿  result\n\n" for i in range(15)
+        )
+        raw = (
+            # Historical SelectInput far up in scroll buffer.
+            " Do you want to proceed?\n"
+            " \u276f 1. Yes\n"
+            "   2. No\n"
+            " Esc to cancel · Tab to amend\n"
+            "\n"
+            # Claude continued working after that (>30 lines of output).
+            + filler
+            + "● Done with the task.\n"
+            "\n"
+            "\u276f \n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.TEXT_INPUT
+
+
+# ---------------------------------------------------------------------------
 # Idle / text input detection
 # ---------------------------------------------------------------------------
 
@@ -226,6 +479,31 @@ class TestIdleDetection:
             "  Tip: Connect Claude to your IDE \u00b7 /ide\n"
             "\u2500" * 80 + "\n"
             "  esc to interrupt\n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.TEXT_INPUT
+
+    def test_unicode_prompt_with_nbsp(self):
+        """Prompt ❯ followed by non-breaking space \\xa0."""
+        raw = (
+            "  Some output text\n"
+            "\u276f\xa0\n"
+            "\u2500" * 80 + "\n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.TEXT_INPUT
+
+    def test_unicode_prompt_with_ccusage_statusline(self):
+        """Real terminal: prompt + separator + ccusage statusline + fast-forward hint."""
+        raw = (
+            "  Some output\n"
+            "\u276f\xa0\n"
+            "\u2500" * 80 + "\n"
+            "  \U0001f916 Opus 4.6 | \U0001f4b0 $26 session | \U0001f525 11%\n"
+            "\n"
+            "  \u23f5\u23f5 accept edits on (shift+tab to cycle)\n"
         )
         result = parse_terminal_output(raw)
         assert result is not None
@@ -503,3 +781,36 @@ class TestRealClaudeCodePayloads:
         result = parse_notification_data(raw)
         assert result is not None
         assert result.type == PromptType.PERMISSION
+
+    def test_permission_tool_extracted_from_message(self):
+        """Claude Code doesn't always send tool_name — extract from message."""
+        from src.daemon.prompt_parser import parse_notification_data
+        # Real-world payload: no tool_name, no tool, just message
+        raw = json.dumps({
+            "notification_type": "permission_prompt",
+            "message": "Claude needs your permission to use Bash",
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert result.type == PromptType.PERMISSION
+        assert result.tool == "Bash"
+
+    def test_permission_tool_extracted_edit_from_message(self):
+        from src.daemon.prompt_parser import parse_notification_data
+        raw = json.dumps({
+            "notification_type": "permission_prompt",
+            "message": "Claude wants to edit a file",
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert result.tool == "Edit"
+
+    def test_permission_tool_extracted_mcp_from_message(self):
+        from src.daemon.prompt_parser import parse_notification_data
+        raw = json.dumps({
+            "notification_type": "permission_prompt",
+            "message": "Claude wants to use the mcp__outline__search tool",
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert result.tool == "mcp__outline__search"

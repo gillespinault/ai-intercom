@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 # Threshold (seconds) below which a session is considered actively working.
 _THINKING_THRESHOLD = 5.0
 
+# How often (seconds) to re-push a session to the hub even if state is unchanged.
+# Must be well under STALE_TIMEOUT_SECONDS (300s) on the hub side.
+_KEEPALIVE_INTERVAL = 120
+
 
 class AttentionMonitor:
     """Monitors Claude Code sessions via heartbeat files.
@@ -68,6 +72,7 @@ class AttentionMonitor:
 
         self._tracked: dict[str, AttentionSession] = {}
         self._last_prompt: dict[str, DetectedPrompt] = {}
+        self._last_push: dict[str, datetime] = {}  # last time an event was pushed per session
         self._running = False
         self._stop_event: asyncio.Event = asyncio.Event()
 
@@ -104,6 +109,33 @@ class AttentionMonitor:
         return AttentionState.WAITING
 
     @staticmethod
+    def _prompt_changed(prev: DetectedPrompt | None, cur: DetectedPrompt | None) -> bool:
+        """Return True if the detected prompt content has meaningfully changed."""
+        if prev is None and cur is None:
+            return False
+        if prev is None or cur is None:
+            return True
+        # Different prompt type is always a change.
+        if prev.type != cur.type:
+            return True
+        # Same type — compare distinguishing fields.
+        if prev.type == "permission":
+            return prev.tool != cur.tool or prev.command_preview != cur.command_preview
+        if prev.type == "question":
+            # Compare question text, command preview, and choices.
+            # Many prompts share the same question ("Do you want to proceed?")
+            # but differ in what command they're asking about.
+            if prev.question != cur.question:
+                return True
+            if prev.command_preview != cur.command_preview:
+                return True
+            prev_keys = [c.key for c in (prev.choices or [])]
+            cur_keys = [c.key for c in (cur.choices or [])]
+            return prev_keys != cur_keys
+        # text_input: no distinguishing content to compare.
+        return False
+
+    @staticmethod
     def _process_alive(pid: int) -> bool:
         """Return ``True`` if a process with *pid* exists."""
         try:
@@ -135,8 +167,45 @@ class AttentionMonitor:
 
     @staticmethod
     def _inject_response(tmux_session: str, keys: str) -> bool:
-        """Send keystrokes into a tmux session."""
+        """Send keystrokes into a tmux session.
+
+        Handles two interaction modes:
+
+        * **SelectInput** (keys prefixed with ``select:``): Claude Code's
+          arrow-navigable menus.  The value after ``select:`` is the
+          offset from the currently focused option.  ``select:0`` means
+          the option is already focused -- just press Enter.  ``select:1``
+          means press Down once then Enter, etc.
+        * **Legacy / character keys**: Sends the literal key string
+          followed by Enter (e.g. ``y``, ``n``, ``a``).
+        """
         try:
+            if keys.startswith("select:"):
+                # SelectInput navigation: Down × offset, then Enter.
+                try:
+                    offset = int(keys.split(":", 1)[1])
+                except (ValueError, IndexError):
+                    offset = 0
+
+                cmd = ["tmux", "send-keys", "-t", tmux_session]
+                if offset > 0:
+                    for _ in range(offset):
+                        cmd.append("Down")
+                elif offset < 0:
+                    for _ in range(abs(offset)):
+                        cmd.append("Up")
+                cmd.append("Enter")
+
+                logger.info(
+                    "SelectInput inject: tmux=%s offset=%d cmd=%s",
+                    tmux_session, offset, cmd[3:],
+                )
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=5,
+                )
+                return result.returncode == 0
+
+            # Legacy: send character key + Enter.
             result = subprocess.run(
                 ["tmux", "send-keys", "-t", tmux_session, keys, "Enter"],
                 capture_output=True,
@@ -204,9 +273,17 @@ class AttentionMonitor:
                 # Cache the prompt for B2 race condition protection
                 if prompt is not None:
                     self._last_prompt[hb.session_id] = prompt
-            else:
-                # Not WAITING: reuse cached prompt if available (B2 fix)
+            elif state == AttentionState.THINKING:
+                # Brief idle (5-15s): keep cached prompt (B2 race protection).
+                # Hook heartbeat can briefly reset idle_seconds even though
+                # the terminal still shows a prompt.
                 prompt = self._last_prompt.get(hb.session_id)
+            else:
+                # WORKING: agent is actively making tool calls — old prompt
+                # is stale.  Clear the cache so the UI doesn't show
+                # phantom yes/no buttons.
+                prompt = None
+                self._last_prompt.pop(hb.session_id, None)
 
             session = AttentionSession(
                 session_id=hb.session_id,
@@ -228,13 +305,25 @@ class AttentionMonitor:
             prev = self._tracked.get(hb.session_id)
             if prev is None:
                 events.append({"type": "new_session", "session": session})
+                self._last_push[hb.session_id] = now
             elif prev.state != session.state:
-                # Preserve state_since from the previous state if unchanged.
                 events.append({"type": "state_changed", "session": session})
-            else:
-                # State unchanged -- just update the tracked entry silently.
-                # Keep the original state_since timestamp.
+                self._last_push[hb.session_id] = now
+            elif self._prompt_changed(prev.prompt, session.prompt):
+                # Prompt content changed within the same state (e.g. new
+                # permission prompt while still WAITING).  Push an update
+                # so the hub and PWA reflect the fresh prompt.
                 session.state_since = prev.state_since
+                events.append({"type": "state_changed", "session": session})
+                self._last_push[hb.session_id] = now
+            else:
+                # State unchanged -- keep the original state_since timestamp.
+                session.state_since = prev.state_since
+                # Send periodic keepalive so the hub doesn't expire this session.
+                last_push = self._last_push.get(hb.session_id, now)
+                if (now - last_push).total_seconds() >= _KEEPALIVE_INTERVAL:
+                    events.append({"type": "keepalive", "session": session})
+                    self._last_push[hb.session_id] = now
 
             self._tracked[hb.session_id] = session
 
@@ -243,6 +332,7 @@ class AttentionMonitor:
         for sid in ended_ids:
             ended_session = self._tracked.pop(sid)
             self._last_prompt.pop(sid, None)  # B2: clean prompt cache
+            self._last_push.pop(sid, None)
             ended_session.state = AttentionState.ENDED
             ended_session.state_since = now.isoformat()
             events.append({"type": "session_ended", "session": ended_session})

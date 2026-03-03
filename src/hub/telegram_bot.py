@@ -25,6 +25,13 @@ from src.shared.models import Message
 logger = logging.getLogger(__name__)
 
 
+def _tg_esc(text: str) -> str:
+    """Escape Markdown V1 special characters for Telegram."""
+    if not text:
+        return ""
+    return re.sub(r"([_*\[\]()~`>#+\-=|{}.!\\])", r"\\\1", str(text))
+
+
 def format_agent_message(from_agent: str, message: str) -> str:
     """Format a message for display in Telegram."""
     if from_agent == "human":
@@ -329,17 +336,56 @@ class TelegramBot:
         if not self.dashboard_url:
             return
         bot: Bot = self.app.bot
-        text = (
-            f"\U0001f514 *Attention requise*\n\n"
-            f"*Agent:* {session.machine}/{session.project}\n"
-            f"*Session:* {session.session_name or session.session_id[:8]}\n"
-        )
-        if session.prompt:
-            text += f"*Type:* {session.prompt.type}\n"
-            if session.prompt.question:
-                text += f"*Question:* {session.prompt.question[:200]}\n"
+
+        # Build a readable project name from the path
+        project_short = (session.project or "").rstrip("/").rsplit("/", 1)[-1] or "?"
+        session_label = session.session_name or project_short
+
+        # Type emoji
+        type_emoji = {
+            "permission": "\U0001f527",  # 🔧
+            "question": "\u2753",        # ❓
+            "text_input": "\u270d\ufe0f", # ✍️
+        }
+
+        prompt = session.prompt
+        ptype = prompt.type if prompt else "unknown"
+        emoji = type_emoji.get(ptype, "\U0001f514")
+
+        # Header: emoji + project@machine
+        text = f"{emoji} *{_tg_esc(session_label)}* `@{_tg_esc(session.machine)}`\n"
+
+        # Context snippet depending on prompt type
+        if prompt:
+            if ptype == "permission":
+                tool = prompt.tool or "Tool"
+                text += f"Permission: *{_tg_esc(tool)}*\n"
+                if prompt.command_preview:
+                    preview = prompt.command_preview
+                    if len(preview) > 120:
+                        preview = preview[:117] + "..."
+                    text += f"`{_tg_esc(preview)}`\n"
+            elif ptype == "question":
+                question = prompt.question or ""
+                if question:
+                    if len(question) > 200:
+                        question = question[:197] + "..."
+                    text += f"{_tg_esc(question)}\n"
+                # Show choices inline
+                if prompt.choices:
+                    labels = [f"[{_tg_esc(c.label)}]" for c in prompt.choices[:5]]
+                    text += " ".join(labels) + "\n"
+            elif ptype == "text_input":
+                if prompt.raw_text:
+                    lines = prompt.raw_text.strip().split("\n")
+                    tail = lines[-1] if lines else ""
+                    if len(tail) > 120:
+                        tail = tail[:117] + "..."
+                    if tail:
+                        text += f"`{_tg_esc(tail)}`\n"
+
         keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("\U0001f4ca Ouvrir Dashboard", url=self.dashboard_url)]]
+            [[InlineKeyboardButton("\U0001f4ca Dashboard", url=self.dashboard_url)]]
         )
         try:
             await bot.send_message(

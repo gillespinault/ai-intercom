@@ -14,7 +14,28 @@ INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 
-PROJECT=$(basename "${CWD:-unknown}" 2>/dev/null || echo "unknown")
+# Detect project: walk up from CWD to find first dir with CLAUDE.md or .git.
+# Special case: ~/.claude/skills/<name>/... → "skill:<name>"
+detect_project() {
+    local dir="${1:-unknown}"
+    # Skill subprocess detection
+    case "$dir" in
+        */.claude/skills/*)
+            echo "skill:$(echo "$dir" | sed 's|.*/.claude/skills/||' | cut -d/ -f1)"
+            return ;;
+    esac
+    # Walk up to find project root
+    while [ "$dir" != "/" ] && [ "$dir" != "$HOME" ]; do
+        if [ -f "$dir/CLAUDE.md" ] || [ -d "$dir/.git" ]; then
+            basename "$dir"
+            return
+        fi
+        dir=$(dirname "$dir")
+    done
+    # Fallback to basename of original CWD
+    basename "${1:-unknown}"
+}
+PROJECT=$(detect_project "${CWD:-unknown}")
 
 # Machine ID from intercom config, fallback to hostname
 MACHINE="$(hostname -s)"
@@ -49,8 +70,9 @@ case "$ACTION" in
         fi
         ;;
     waiting)
-        # Set a timestamp far in the past so idle_seconds >> 15s → WAITING
-        TOOL_TIME="2000-01-01T00:00:00+00:00"
+        # Set a timestamp 60s in the past so idle_seconds >> 15s → WAITING
+        # (avoids sentinel year-2000 values that produce absurd idle_seconds)
+        TOOL_TIME=$(date -u -d '60 seconds ago' +"%Y-%m-%dT%H:%M:%S+00:00" 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%S+00:00")
         # Capture the hook payload as notification context
         NOTIFICATION_DATA=$(echo "$INPUT" | head -c 2000 | jq -Rs '.')
         ;;

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'attention-hub-v3';
+const CACHE_NAME = 'attention-hub-v4';
 const ASSETS = [
   '/attention',
   '/attention/styles.css',

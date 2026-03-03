@@ -179,17 +179,30 @@ def create_attention_router(store: AttentionStore, registry: Registry) -> APIRou
                         if session:
                             machine = await registry.get_machine(session.machine)
                             if machine and machine.get("daemon_url"):
+                                daemon_url = machine["daemon_url"]
+                                logger.info(
+                                    "WS respond: session=%s tmux=%s keys=%r -> %s",
+                                    session_id[:12], session.tmux_session, keys, daemon_url,
+                                )
                                 try:
                                     async with httpx.AsyncClient(timeout=10) as client:
-                                        await client.post(
-                                            f"{machine['daemon_url']}/api/attention/respond",
+                                        resp = await client.post(
+                                            f"{daemon_url}/api/attention/respond",
                                             json={
                                                 "tmux_session": session.tmux_session,
                                                 "keys": keys,
                                             },
                                         )
+                                        logger.info("WS respond result: %s", resp.text)
                                 except Exception as e:
                                     logger.warning("WebSocket respond failed: %s", e)
+                            else:
+                                logger.warning(
+                                    "WS respond: no daemon_url for machine=%s",
+                                    session.machine,
+                                )
+                        else:
+                            logger.warning("WS respond: session %s not found in store", session_id[:12])
 
         except WebSocketDisconnect:
             pass
@@ -207,6 +220,11 @@ def create_pwa_router() -> APIRouter:
 
     router = APIRouter(tags=["pwa"])
     pwa_dir = Path(__file__).parent.parent.parent / "pwa"
+
+    @router.get("/")
+    async def pwa_root_redirect():
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/attention")
 
     @router.get("/attention")
     async def pwa_index():

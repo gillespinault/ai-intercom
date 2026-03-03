@@ -39,12 +39,6 @@
       <span class="brand-text">ATT<span class="brand-accent">HUB</span></span>
     </div>
 
-    <nav id="mode-tabs" class="mode-tabs" aria-label="View mode">
-      <button class="mode-tab" data-mode="actions" aria-selected="true" type="button">Actions</button>
-      <button class="mode-tab" data-mode="terminals" aria-selected="false" type="button">Terminals</button>
-      <button class="mode-tab" data-mode="split" aria-selected="false" type="button">Split</button>
-    </nav>
-
     <div class="header-right">
       <div class="header-stats" id="header-stats"></div>
       <div id="conn-dot" class="conn-dot disconnected" title="Connection status"></div>
@@ -57,8 +51,11 @@
     </div>
   </header>
 
-  <!-- Main content area -->
-  <main id="content" class="main main-content view-actions"></main>
+  <!-- Session strip -->
+  <div id="session-strip" class="session-strip"></div>
+
+  <!-- Action queue -->
+  <main id="content" class="main main-content action-queue"></main>
 
   <!-- Toast notification container -->
   <div id="toast-container" class="toast-container" aria-live="polite"></div>
@@ -139,6 +136,13 @@
     <div class="prefs-section">
       <div class="prefs-label">Display</div>
       <div class="prefs-row">
+        <span class="prefs-row-text">eInk mode</span>
+        <label class="toggle">
+          <input type="checkbox" id="pref-eink">
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+      <div class="prefs-row">
         <span class="prefs-row-text">Auto-scroll terminals</span>
         <label class="toggle">
           <input type="checkbox" id="pref-autoscroll" checked>
@@ -152,15 +156,15 @@
           <span class="toggle-track"></span>
         </label>
       </div>
-      <div class="prefs-row">
-        <span class="prefs-row-text">Group by machine</span>
-        <label class="toggle">
-          <input type="checkbox" id="pref-group-machine" checked>
-          <span class="toggle-track"></span>
-        </label>
-      </div>
     </div>
   </aside>
+
+  <!-- Terminal slide-up panel -->
+  <div id="terminal-slide" class="terminal-slide" aria-hidden="true">
+    <div class="terminal-slide-handle"><span class="terminal-slide-bar"></span></div>
+    <div class="terminal-slide-header" id="terminal-slide-header"></div>
+    <div class="terminal-slide-body" id="terminal-slide-body"></div>
+  </div>
 
   <!-- xterm.js -->
   <script defer src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.min.js"></script>

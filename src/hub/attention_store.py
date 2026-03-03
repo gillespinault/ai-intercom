@@ -79,6 +79,10 @@ class AttentionStore:
             elif session.session_id in self._notified_waiting:
                 # Reset debounce when leaving WAITING
                 self._notified_waiting.discard(session.session_id)
+        elif event_type == "keepalive":
+            # Refresh last_update to prevent stale cleanup, no notification.
+            session.last_update = datetime.now(timezone.utc).isoformat()
+            self._sessions[session.session_id] = session
         elif event_type == "session_ended":
             self._sessions.pop(session.session_id, None)
             self._notified_waiting.discard(session.session_id)

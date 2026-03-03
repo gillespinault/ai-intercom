@@ -13,6 +13,7 @@ services:
     volumes:
       - ./config/config.yml:/app/config/config.yml:ro
       - ./config/policies.yml:/app/config/policies.yml:ro
+      - ./pwa:/app/pwa:ro
       - intercom-data:/app/data
 
 volumes:

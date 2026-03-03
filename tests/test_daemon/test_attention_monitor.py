@@ -367,8 +367,12 @@ class TestRunLoop:
 
 class TestPromptCache:
     @pytest.mark.asyncio
-    async def test_prompt_cached_after_waiting_to_working(self, monitor, sessions_dir):
-        """Prompt detected in WAITING should persist when session transitions to WORKING."""
+    async def test_prompt_cleared_on_working(self, monitor, sessions_dir):
+        """Prompt should be cleared when session transitions to WORKING.
+
+        When the agent is actively making tool calls (<5s idle), old prompts
+        are stale.  B2 cache only applies to THINKING (5-15s).
+        """
         pid = os.getpid()
         sid = f"sess-{pid}"
         notification = json.dumps({"tool": "AskUser", "message": "Pick an option?"})
@@ -384,9 +388,8 @@ class TestPromptCache:
         assert len(events1) == 1
         assert events1[0]["session"].state == AttentionState.WAITING
         assert events1[0]["session"].prompt is not None
-        cached_prompt = events1[0]["session"].prompt
 
-        # Poll 2: transition to WORKING (recent timestamp, no notification_data)
+        # Poll 2: transition to WORKING (recent timestamp)
         write_heartbeat(
             sessions_dir,
             pid=pid,
@@ -397,7 +400,39 @@ class TestPromptCache:
         assert len(events2) == 1
         assert events2[0]["type"] == "state_changed"
         assert events2[0]["session"].state == AttentionState.WORKING
-        # B2 fix: prompt should still be available from cache
+        # Prompt must be cleared — agent is actively working
+        assert events2[0]["session"].prompt is None
+        # Cache should also be cleared
+        assert sid not in monitor._last_prompt
+
+    @pytest.mark.asyncio
+    async def test_prompt_cached_during_thinking(self, monitor, sessions_dir):
+        """B2 protection: prompt cached during THINKING (5-15s idle)."""
+        pid = os.getpid()
+        sid = f"sess-{pid}"
+        notification = json.dumps({"tool": "AskUser", "message": "Pick an option?"})
+
+        # Poll 1: WAITING with prompt
+        write_heartbeat(
+            sessions_dir,
+            pid=pid,
+            last_tool_time=_iso_past(60),
+            notification_data=notification,
+        )
+        events1 = await monitor.poll_once()
+        assert events1[0]["session"].prompt is not None
+        cached_prompt = events1[0]["session"].prompt
+
+        # Poll 2: transition to THINKING (8s idle — between 5 and 15)
+        write_heartbeat(
+            sessions_dir,
+            pid=pid,
+            last_tool_time=_iso_past(8),
+            notification_data="",
+        )
+        events2 = await monitor.poll_once()
+        assert events2[0]["session"].state == AttentionState.THINKING
+        # B2: cached prompt preserved during brief THINKING transitions
         assert events2[0]["session"].prompt is not None
         assert events2[0]["session"].prompt.raw_text == cached_prompt.raw_text
 
@@ -422,6 +457,173 @@ class TestPromptCache:
         os.remove(hb_path)
         await monitor.poll_once()
         assert sid not in monitor._last_prompt
+
+
+# ---------------------------------------------------------------------------
+# TestKeepalive
+# ---------------------------------------------------------------------------
+
+
+class TestKeepalive:
+    @pytest.mark.asyncio
+    async def test_keepalive_sent_after_interval(self, monitor, sessions_dir):
+        """A keepalive event should be sent when state is unchanged for >KEEPALIVE_INTERVAL."""
+        from datetime import datetime, timedelta, timezone
+        from src.daemon.attention_monitor import _KEEPALIVE_INTERVAL
+
+        pid = os.getpid()
+        write_heartbeat(sessions_dir, pid=pid, last_tool_time=_iso_past(60))
+
+        # Poll 1: new_session
+        events1 = await monitor.poll_once()
+        assert len(events1) == 1
+        assert events1[0]["type"] == "new_session"
+
+        # Poll 2: same state, no keepalive yet (just registered)
+        events2 = await monitor.poll_once()
+        assert len(events2) == 0
+
+        # Simulate that last push was long ago
+        sid = f"sess-{pid}"
+        monitor._last_push[sid] = datetime.now(timezone.utc) - timedelta(
+            seconds=_KEEPALIVE_INTERVAL + 10
+        )
+
+        # Poll 3: should emit keepalive
+        events3 = await monitor.poll_once()
+        assert len(events3) == 1
+        assert events3[0]["type"] == "keepalive"
+        assert events3[0]["session"].session_id == sid
+
+    @pytest.mark.asyncio
+    async def test_no_keepalive_before_interval(self, monitor, sessions_dir):
+        """No keepalive should be sent before KEEPALIVE_INTERVAL elapses."""
+        pid = os.getpid()
+        write_heartbeat(sessions_dir, pid=pid, last_tool_time=_iso_past(60))
+
+        # Poll 1: new_session
+        await monitor.poll_once()
+
+        # Poll 2: state unchanged, interval not yet elapsed
+        events = await monitor.poll_once()
+        assert len(events) == 0
+
+    @pytest.mark.asyncio
+    async def test_keepalive_pushed_to_hub(self, monitor, sessions_dir):
+        """Keepalive events should be pushed to hub_client."""
+        from datetime import datetime, timedelta, timezone
+        from src.daemon.attention_monitor import _KEEPALIVE_INTERVAL
+
+        pushed: list[dict] = []
+
+        class FakeHub:
+            async def push_attention_event(self, event):
+                pushed.append(event)
+
+        monitor._hub_client = FakeHub()
+
+        pid = os.getpid()
+        sid = f"sess-{pid}"
+        write_heartbeat(sessions_dir, pid=pid, last_tool_time=_iso_past(60))
+
+        # Poll 1: new_session pushed
+        await monitor.poll_once()
+        assert len(pushed) == 1
+
+        # Force keepalive timing
+        monitor._last_push[sid] = datetime.now(timezone.utc) - timedelta(
+            seconds=_KEEPALIVE_INTERVAL + 1
+        )
+
+        # Poll 2: keepalive pushed
+        await monitor.poll_once()
+        assert len(pushed) == 2
+        assert pushed[1]["type"] == "keepalive"
+
+    @pytest.mark.asyncio
+    async def test_last_push_cleaned_on_session_end(self, monitor, sessions_dir):
+        """_last_push should be cleaned when session ends."""
+        pid = os.getpid()
+        sid = f"sess-{pid}"
+        hb_path = write_heartbeat(sessions_dir, pid=pid, last_tool_time=_iso_now())
+
+        await monitor.poll_once()
+        assert sid in monitor._last_push
+
+        os.remove(hb_path)
+        await monitor.poll_once()
+        assert sid not in monitor._last_push
+
+
+class TestPromptChanged:
+    """Tests for _prompt_changed — detects prompt content changes within same state."""
+
+    def test_both_none(self):
+        assert not AttentionMonitor._prompt_changed(None, None)
+
+    def test_one_none(self):
+        from src.shared.models import DetectedPrompt
+        prompt = DetectedPrompt(type="permission", raw_text="test", tool="Bash")
+        assert AttentionMonitor._prompt_changed(None, prompt)
+        assert AttentionMonitor._prompt_changed(prompt, None)
+
+    def test_different_type(self):
+        from src.shared.models import DetectedPrompt
+        perm = DetectedPrompt(type="permission", raw_text="test", tool="Bash")
+        text = DetectedPrompt(type="text_input", raw_text="test")
+        assert AttentionMonitor._prompt_changed(perm, text)
+
+    def test_same_permission_same_tool(self):
+        from src.shared.models import DetectedPrompt
+        a = DetectedPrompt(type="permission", raw_text="v1", tool="Bash", command_preview="ls")
+        b = DetectedPrompt(type="permission", raw_text="v2", tool="Bash", command_preview="ls")
+        assert not AttentionMonitor._prompt_changed(a, b)
+
+    def test_same_permission_different_tool(self):
+        from src.shared.models import DetectedPrompt
+        a = DetectedPrompt(type="permission", raw_text="v1", tool="Bash", command_preview="ls")
+        b = DetectedPrompt(type="permission", raw_text="v2", tool="Edit", command_preview="foo.py")
+        assert AttentionMonitor._prompt_changed(a, b)
+
+    def test_same_permission_different_command(self):
+        from src.shared.models import DetectedPrompt
+        a = DetectedPrompt(type="permission", raw_text="v1", tool="Bash", command_preview="ls")
+        b = DetectedPrompt(type="permission", raw_text="v2", tool="Bash", command_preview="cat foo")
+        assert AttentionMonitor._prompt_changed(a, b)
+
+    def test_same_question_same_text(self):
+        from src.shared.models import DetectedPrompt
+        a = DetectedPrompt(type="question", raw_text="v1", question="Which one?")
+        b = DetectedPrompt(type="question", raw_text="v2", question="Which one?")
+        assert not AttentionMonitor._prompt_changed(a, b)
+
+    def test_same_question_different_text(self):
+        from src.shared.models import DetectedPrompt
+        a = DetectedPrompt(type="question", raw_text="v1", question="Which one?")
+        b = DetectedPrompt(type="question", raw_text="v2", question="Select approach?")
+        assert AttentionMonitor._prompt_changed(a, b)
+
+    def test_same_question_different_command_preview(self):
+        from src.shared.models import DetectedPrompt
+        a = DetectedPrompt(type="question", raw_text="v1", question="Do you want to proceed?", command_preview="ls -la")
+        b = DetectedPrompt(type="question", raw_text="v2", question="Do you want to proceed?", command_preview="cat foo.py")
+        assert AttentionMonitor._prompt_changed(a, b)
+
+    def test_same_question_different_choices(self):
+        from src.shared.models import DetectedPrompt, PromptChoice
+        a = DetectedPrompt(type="question", raw_text="v1", question="Do you want to proceed?",
+                           choices=[PromptChoice(key="select:0", label="Yes"), PromptChoice(key="select:1", label="No")])
+        b = DetectedPrompt(type="question", raw_text="v2", question="Do you want to proceed?",
+                           choices=[PromptChoice(key="select:0", label="Yes"),
+                                    PromptChoice(key="select:1", label="Yes, and don't ask again"),
+                                    PromptChoice(key="select:2", label="No")])
+        assert AttentionMonitor._prompt_changed(a, b)
+
+    def test_text_input_never_changes(self):
+        from src.shared.models import DetectedPrompt
+        a = DetectedPrompt(type="text_input", raw_text="v1")
+        b = DetectedPrompt(type="text_input", raw_text="v2")
+        assert not AttentionMonitor._prompt_changed(a, b)
 
 
 class TestResync:

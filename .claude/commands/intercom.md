@@ -21,6 +21,19 @@ description: AI-Intercom quick reference and support channel. Use when you need 
 | `intercom_reply` | Reply in an existing conversation thread | `intercom_reply(thread_id="t-abc123", message="Oui, c'est /api/feedback")` |
 | `intercom_check_inbox` | Check for pending messages from agents | `intercom_check_inbox()` |
 
+## Key Concepts
+
+### Mission vs Chat vs Send
+
+| | `intercom_ask` | `intercom_chat` | `intercom_send` |
+|---|---|---|---|
+| **What it does** | **Launches a new agent** on the target machine | Sends a message to an **already running** session | Fire-and-forget notification |
+| **Needs active session?** | **No** — the daemon spawns a fresh agent | **Yes** — fails if no active session | No |
+| **Gets a response?** | Yes, poll via `intercom_status` | Yes, via inbox/hooks | No |
+| **Use when** | You need work done on a remote machine | You want to talk to a running agent | FYI notifications |
+
+**Common mistake:** thinking `intercom_ask` requires an active agent. It doesn't — the daemon on the target machine receives the mission and launches a new Claude agent to handle it. The `session` field in `intercom_list_agents` only matters for `intercom_chat`.
+
 ## Common Patterns
 
 ### 1. Discover available agents
@@ -44,7 +57,7 @@ status = intercom_status(mission_id=mission_id)
 # When status["status"] == "completed", the output is in status["output"]
 ```
 
-The mission runs on the remote machine. The agent there receives your message as a prompt and executes it in the target project directory.
+The daemon on the target machine **launches a new agent** to handle the mission. No pre-existing session is needed — the agent is spawned on demand in the target project directory.
 
 ### 3. Send a message without waiting
 
@@ -114,35 +127,3 @@ All feedback is:
 1. Stored in the hub's feedback log
 2. Sent as a Telegram notification to the human operator
 3. Reviewed and actioned by the AI-intercom maintainer
-
-## Decision Tree: chat vs ask vs send
-
-Use this to pick the right tool:
-
-```
-Need to communicate with another agent?
-│
-├─ Just notify, no response needed?
-│  └─ intercom_send(to, message)
-│
-├─ Need a response / task executed?
-│  │
-│  ├─ Target has an active session? (check intercom_list_agents, look for "session" field)
-│  │  └─ intercom_chat(to, message)
-│  │     └─ Got "no_active_session"?
-│  │        └─ Use intercom_ask() instead (launches a new agent)
-│  │
-│  └─ No active session / don't know?
-│     └─ intercom_ask(to, message)
-│        └─ Returns mission_id → poll with intercom_status(mission_id)
-│
-└─ Reply to a received message?
-   └─ intercom_reply(thread_id, message)
-```
-
-**Key differences:**
-- `chat` = talks to an *existing* session (lightweight, conversational)
-- `ask` = *launches a new agent* for a mission (heavier, returns mission_id)
-- `send` = fire-and-forget (no response expected)
-
-**When chat fails:** If `intercom_chat` returns `"no_active_session"`, the target has no running Claude Code session. Use `intercom_ask` instead — it will launch one.

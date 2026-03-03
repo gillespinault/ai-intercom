@@ -397,6 +397,70 @@ class TestWaitingDebounce:
         assert callback.call_count == 2
 
 
+class TestKeepaliveEvent:
+    """Tests for keepalive event handling."""
+
+    def test_keepalive_refreshes_last_update(self):
+        """A keepalive event should update last_update without triggering notifications."""
+        from datetime import datetime, timedelta, timezone
+
+        store = AttentionStore()
+
+        # Add a session
+        store.handle_event("laptop", {
+            "type": "new_session",
+            "session": _make_session(
+                session_id="ka-1", state=AttentionState.WAITING,
+            ).model_dump(),
+        })
+        initial_update = store.get_session("ka-1").last_update
+
+        # Backdate it so we can see the refresh
+        old_time = (
+            datetime.now(timezone.utc) - timedelta(seconds=200)
+        ).isoformat()
+        store._sessions["ka-1"].last_update = old_time
+
+        # Send keepalive
+        store.handle_event("laptop", {
+            "type": "keepalive",
+            "session": _make_session(
+                session_id="ka-1", state=AttentionState.WAITING,
+            ).model_dump(),
+        })
+
+        refreshed = store.get_session("ka-1")
+        assert refreshed is not None
+        assert refreshed.last_update != old_time  # Was refreshed
+
+    @pytest.mark.asyncio
+    async def test_keepalive_does_not_trigger_notification(self):
+        """Keepalive should not trigger the on_waiting callback."""
+        store = AttentionStore()
+        callback = AsyncMock()
+        store.set_on_waiting_callback(callback)
+
+        # Initial new_session in WAITING triggers callback
+        store.handle_event("laptop", {
+            "type": "new_session",
+            "session": _make_session(
+                session_id="ka-2", state=AttentionState.WAITING,
+            ).model_dump(),
+        })
+        await asyncio.sleep(0)
+        assert callback.call_count == 1
+
+        # Keepalive should NOT trigger again
+        store.handle_event("laptop", {
+            "type": "keepalive",
+            "session": _make_session(
+                session_id="ka-2", state=AttentionState.WAITING,
+            ).model_dump(),
+        })
+        await asyncio.sleep(0)
+        assert callback.call_count == 1  # Still 1
+
+
 class TestStaleSessionCleanup:
     """Tests for automatic cleanup of stale sessions."""
 

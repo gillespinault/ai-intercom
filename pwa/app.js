@@ -1,7 +1,8 @@
 /* ================================================================
-   Attention Hub — Main Application Module
-   WebSocket, session state, machine grouping, sound alerts,
-   toast notifications, event timeline, tmux-centric UX.
+   Attention Hub — Tile Grid Control Room v3
+   Stream Deck-style tile layout with stable positions.
+   Each session = one tile. Waiting tiles highlighted.
+   Positions stay consistent for visual/muscle memory.
    ================================================================ */
 
 (function () {
@@ -22,17 +23,25 @@
   /** @type {Array<Object>} */
   var sessions = [];
 
-  /** @type {'actions'|'terminals'|'split'} */
-  var currentMode = 'actions';
-
   var prefsOpen = false;
-  var splitSelectedId = null;
 
   /** Per-session event timeline: { sessionId: [{state, timestamp}] } */
   var sessionTimelines = {};
 
   /** Track previously known waiting sessions (for sound/vibration alerts) */
   var previousWaitingIds = {};
+
+  /** Sent response tracking: { sessionId: timestamp } */
+  var sentResponses = {};
+
+  /** Currently open terminal slide session */
+  var terminalSlideSessionId = null;
+
+  /** Stable tile ordering: session IDs in insertion order */
+  var sessionOrder = [];
+
+  /** Dismissed tiles: hidden for this browser session only */
+  var dismissedSessions = {};
 
   // ---- Audio Context (lazy init) ----
 
@@ -45,19 +54,12 @@
     return audioCtx;
   }
 
-  /**
-   * Play a two-tone alert: short high note then lower sustained note.
-   */
   function playAlertSound() {
     var ctx = getAudioCtx();
     if (!ctx) return;
-
-    // Resume if suspended (autoplay policy)
     if (ctx.state === 'suspended') ctx.resume();
-
     var now = ctx.currentTime;
 
-    // First tone: 880Hz, 100ms
     var osc1 = ctx.createOscillator();
     var gain1 = ctx.createGain();
     osc1.type = 'sine';
@@ -69,7 +71,6 @@
     osc1.start(now);
     osc1.stop(now + 0.12);
 
-    // Second tone: 660Hz, 200ms (starts 120ms later)
     var osc2 = ctx.createOscillator();
     var gain2 = ctx.createGain();
     osc2.type = 'sine';
@@ -82,9 +83,6 @@
     osc2.stop(now + 0.38);
   }
 
-  /**
-   * Trigger vibration pattern if supported and enabled.
-   */
   function triggerVibration() {
     if (navigator.vibrate) {
       navigator.vibrate([200, 100, 200]);
@@ -95,11 +93,6 @@
 
   var TOAST_DURATION = 4000;
 
-  /**
-   * Show a toast notification.
-   * @param {string} message
-   * @param {'success'|'warning'|'error'|'info'} variant
-   */
   function showToast(message, variant) {
     var container = document.getElementById('toast-container');
     if (!container) return;
@@ -118,8 +111,6 @@
     });
 
     container.appendChild(toast);
-
-    // Auto-dismiss
     setTimeout(function () { dismissToast(toast); }, TOAST_DURATION);
   }
 
@@ -144,10 +135,9 @@
     'pref-push': false,
     'pref-autoscroll': true,
     'pref-idle': true,
-    'pref-group-machine': true
+    'pref-eink': false
   };
 
-  /** @type {Object<string, boolean>} */
   var prefs = {};
 
   function loadPrefs() {
@@ -170,6 +160,19 @@
       var el = document.getElementById(keys[i]);
       if (el && el.type === 'checkbox') el.checked = prefs[keys[i]];
     }
+    applyTheme();
+  }
+
+  function applyTheme() {
+    if (prefs['pref-eink']) {
+      document.documentElement.setAttribute('data-theme', 'eink');
+      var meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.content = '#ffffff';
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+      var meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.content = '#0a0e1a';
+    }
   }
 
   function initPrefsListeners() {
@@ -180,7 +183,8 @@
         if (el) {
           el.addEventListener('change', function () {
             savePref(key, el.checked);
-            renderCurrentMode();
+            if (key === 'pref-eink') applyTheme();
+            renderDashboard();
           });
         }
       })(keys[i]);
@@ -191,19 +195,23 @@
 
   var elContent = null;
   var elConnDot = null;
-  var elModeTabs = null;
   var elPrefsBackdrop = null;
   var elPrefsPanel = null;
   var elHeaderStats = null;
 
   // ---- Helpers ----
 
-  function formatIdle(seconds) {
+  // Sentinel: idle_seconds above this threshold means the timestamp is bogus
+  // (e.g. last_tool_time = 2000-01-01).
+  var MAX_REASONABLE_IDLE = 86400; // 24 hours
+
+  function formatAge(seconds) {
     if (seconds == null || seconds < 0) return '';
+    if (seconds > MAX_REASONABLE_IDLE) return '24h+';
     if (seconds < 60) return seconds + 's';
     var m = Math.floor(seconds / 60);
     var s = seconds % 60;
-    if (m < 60) return s ? m + 'm' + String(s).padStart(2, '0') + 's' : m + 'm';
+    if (m < 60) return m + 'm' + (s ? String(s).padStart(2, '0') + 's' : '');
     var h = Math.floor(m / 60);
     var rm = m % 60;
     return h + 'h' + String(rm).padStart(2, '0') + 'm';
@@ -220,28 +228,40 @@
     return parts[parts.length - 1] || path;
   }
 
-  function statePriority(state) {
-    switch ((state || '').toLowerCase()) {
-      case 'waiting':  return 0;
-      case 'thinking': return 1;
-      case 'working':  return 2;
-      default:         return 3;
+  /**
+   * Build a display name for a session.
+   * Priority: session_name > project + tmux suffix for disambiguation.
+   * e.g. "AI-intercom #2" when tmux is "cc-AI-intercom-2".
+   */
+  function sessionDisplayName(s) {
+    if (s.session_name) return s.session_name;
+    var proj = shortProject(s.project) || 'Session';
+    // Clean skill: prefix for display (badge handles the label)
+    if (proj.indexOf('skill:') === 0) proj = proj.substring(6);
+    // Extract numeric suffix from tmux session name for disambiguation.
+    // Only when tmux name matches "cc-<project>-<N>" pattern.
+    if (s.tmux_session) {
+      var pattern = new RegExp('^cc-' + proj.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '-(\\d+)$', 'i');
+      var m = s.tmux_session.match(pattern);
+      if (m) return proj + ' #' + m[1];
+    }
+    return proj;
+  }
+
+  function promptTypeIcon(type) {
+    switch (type) {
+      case 'permission': return '\ud83d\udd27';
+      case 'question':   return '\u2753';
+      case 'text_input': return '\u270d\ufe0f';
+      default:           return '\u25cf';
     }
   }
 
-  // ---- Session Sorting & Filtering ----
-
-  function sortSessions(list) {
-    return list.slice().sort(function (a, b) {
-      var pa = statePriority(a.state);
-      var pb = statePriority(b.state);
-      if (pa !== pb) return pa - pb;
-      return (b.idle_seconds || 0) - (a.idle_seconds || 0);
-    });
-  }
+  // ---- Session Filtering (stable order) ----
 
   function filterSessions(list) {
     return list.filter(function (s) {
+      if (dismissedSessions[s.session_id]) return false;
       var state = (s.state || '').toLowerCase();
       var prompt = s.prompt;
       if (state === 'working' && !prefs['pref-working']) return false;
@@ -257,7 +277,23 @@
   }
 
   function getVisibleSessions() {
-    return sortSessions(filterSessions(sessions));
+    // Maintain stable ordering: add new sessions, prune ended ones
+    for (var i = 0; i < sessions.length; i++) {
+      if (sessionOrder.indexOf(sessions[i].session_id) === -1) {
+        sessionOrder.push(sessions[i].session_id);
+      }
+    }
+    var activeIds = {};
+    for (var j = 0; j < sessions.length; j++) {
+      activeIds[sessions[j].session_id] = true;
+    }
+    sessionOrder = sessionOrder.filter(function (sid) { return activeIds[sid]; });
+
+    // Filter by preferences, sort by stable insertion order
+    var filtered = filterSessions(sessions);
+    return filtered.slice().sort(function (a, b) {
+      return sessionOrder.indexOf(a.session_id) - sessionOrder.indexOf(b.session_id);
+    });
   }
 
   // ---- Header Stats ----
@@ -290,22 +326,13 @@
       sessionTimelines[sessionId] = [];
     }
     var timeline = sessionTimelines[sessionId];
-    // Only record if state changed
     if (timeline.length > 0 && timeline[timeline.length - 1].state === state) return;
     timeline.push({ state: state, timestamp: Date.now() });
-    // Keep last 10
     if (timeline.length > 10) timeline.shift();
-  }
-
-  function getTimeline(sessionId) {
-    return sessionTimelines[sessionId] || [];
   }
 
   // ---- Alert Logic ----
 
-  /**
-   * Check for newly waiting sessions and trigger alerts.
-   */
   function checkAlerts() {
     var currentWaitingIds = {};
     for (var i = 0; i < sessions.length; i++) {
@@ -314,7 +341,6 @@
       }
     }
 
-    // Find new waiting sessions
     var newWaiting = false;
     var ids = Object.keys(currentWaitingIds);
     for (var j = 0; j < ids.length; j++) {
@@ -344,12 +370,11 @@
     connState = state;
     if (elConnDot) elConnDot.className = 'conn-dot ' + state;
 
-    // Toast on state changes
     if (prev !== state) {
       if (state === 'connected' && prev !== 'connected') {
         showToast('Connected to hub', 'success');
       } else if (state === 'disconnected' && prev === 'connected') {
-        showToast('Connection lost — reconnecting...', 'warning');
+        showToast('Connection lost \u2014 reconnecting...', 'warning');
       }
     }
   }
@@ -402,6 +427,7 @@
 
   function sendRespond(sessionId, keys) {
     wsSend({ action: 'respond', session_id: sessionId, keys: keys });
+    sentResponses[sessionId] = Date.now();
     showToast('Response sent', 'success');
   }
 
@@ -411,20 +437,19 @@
     switch (msg.type) {
       case 'snapshot':
         sessions = msg.sessions || [];
-        // Record initial timeline state for all sessions
         for (var i = 0; i < sessions.length; i++) {
           recordTimelineEvent(sessions[i].session_id, (sessions[i].state || '').toLowerCase());
         }
         checkAlerts();
         updateHeaderStats();
-        renderCurrentMode();
+        renderDashboard();
         break;
 
       case 'session_update':
         upsertSession(msg.session);
         checkAlerts();
         updateHeaderStats();
-        renderCurrentMode();
+        renderDashboard();
         break;
 
       case 'session_end':
@@ -436,7 +461,7 @@
         removeSession(endId);
         checkAlerts();
         updateHeaderStats();
-        renderCurrentMode();
+        renderDashboard();
         break;
 
       default:
@@ -444,16 +469,25 @@
           upsertSession(msg.session);
           checkAlerts();
           updateHeaderStats();
-          renderCurrentMode();
+          renderDashboard();
         }
         break;
     }
   }
 
+  function getSessionState(sessionId) {
+    for (var i = 0; i < sessions.length; i++) {
+      if (sessions[i].session_id === sessionId) {
+        return (sessions[i].state || '').toLowerCase();
+      }
+    }
+    return null;
+  }
+
   function getSessionName(sessionId) {
     for (var i = 0; i < sessions.length; i++) {
       if (sessions[i].session_id === sessionId) {
-        return sessions[i].session_name || shortProject(sessions[i].project);
+        return sessionDisplayName(sessions[i]);
       }
     }
     return null;
@@ -466,50 +500,76 @@
 
     var idx = sessions.findIndex(function (s) { return s.session_id === sessionData.session_id; });
     if (idx >= 0) {
-      // Check if this is a new session appearing
       sessions[idx] = sessionData;
     } else {
       sessions.push(sessionData);
-      showToast('New session: ' + (sessionData.session_name || shortProject(sessionData.project) || 'unknown'), 'info');
+      showToast('New session: ' + sessionDisplayName(sessionData), 'info');
     }
   }
 
   function removeSession(sessionId) {
     if (!sessionId) return;
     sessions = sessions.filter(function (s) { return s.session_id !== sessionId; });
-    if (splitSelectedId === sessionId) splitSelectedId = null;
+    // Clean from stable order
+    var idx = sessionOrder.indexOf(sessionId);
+    if (idx >= 0) sessionOrder.splice(idx, 1);
+    delete sentResponses[sessionId];
+    if (terminalSlideSessionId === sessionId) closeTerminalSlide();
   }
 
-  // ---- Mode Switching ----
+  // ================================================================
+  // Render Dashboard
+  // ================================================================
 
-  function setMode(mode) {
-    if (mode === currentMode) return;
-    if (window.TerminalManager) window.TerminalManager.onModeChange(currentMode, mode);
-    currentMode = mode;
-    if (elModeTabs) {
-      elModeTabs.querySelectorAll('.mode-tab').forEach(function (tab) {
-        tab.setAttribute('aria-selected', tab.dataset.mode === mode ? 'true' : 'false');
-      });
-    }
-    renderCurrentMode();
+  function renderDashboard() {
+    updateHeaderStats();
+    renderTileGrid();
   }
 
-  function renderCurrentMode() {
+  // ================================================================
+  // Tile Grid
+  // ================================================================
+
+  function renderTileGrid() {
     if (!elContent) return;
     if (window.TerminalManager) window.TerminalManager.beforeRender();
 
-    elContent.innerHTML = '';
-    elContent.className = 'main-content view-' + currentMode;
-
     var visible = getVisibleSessions();
 
-    if (visible.length === 0 && sessions.length === 0) { renderEmpty(); return; }
-    if (visible.length === 0) { renderFilteredEmpty(); return; }
+    // Preserve input values before clearing
+    var inputValues = {};
+    var inputs = elContent.querySelectorAll('input.tile-text-input');
+    for (var iv = 0; iv < inputs.length; iv++) {
+      var parent = inputs[iv].closest('[data-session-id]');
+      if (parent && inputs[iv].value) {
+        inputValues[parent.dataset.sessionId] = inputs[iv].value;
+      }
+    }
 
-    switch (currentMode) {
-      case 'actions':   renderActions(visible); break;
-      case 'terminals': renderTerminals(visible); break;
-      case 'split':     renderSplit(visible); break;
+    elContent.innerHTML = '';
+
+    if (visible.length === 0 && sessions.length === 0) {
+      elContent.className = 'main-content';
+      renderEmpty();
+      return;
+    }
+
+    if (visible.length === 0) {
+      elContent.className = 'main-content';
+      renderFilteredEmpty();
+      return;
+    }
+
+    elContent.className = 'main-content tile-grid';
+
+    for (var i = 0; i < visible.length; i++) {
+      var tileEl = createTile(visible[i]);
+      // Restore input value
+      if (inputValues[visible[i].session_id]) {
+        var inp = tileEl.querySelector('.tile-text-input');
+        if (inp) inp.value = inputValues[visible[i].session_id];
+      }
+      elContent.appendChild(tileEl);
     }
   }
 
@@ -527,404 +587,322 @@
     div.className = 'empty-state';
     div.innerHTML =
       '<div class="empty-state-icon" aria-hidden="true">\u29D6</div>' +
-      '<div class="empty-state-text">' + sessions.length + ' session(s) hidden by filters.<br>Adjust preferences to see them.</div>';
+      '<div class="empty-state-text">' + sessions.length + ' session(s) hidden by filters or dismissed.<br>Adjust preferences or reload to see them.</div>';
     elContent.appendChild(div);
   }
 
   // ================================================================
-  // Actions Mode (with machine grouping)
+  // Tile Creation
   // ================================================================
 
-  function renderActions(visible) {
-    if (prefs['pref-group-machine']) {
-      renderGroupedActions(visible);
-    } else {
-      visible.forEach(function (s) {
-        elContent.appendChild(createActionCard(s, false));
-      });
-    }
-  }
-
-  function renderGroupedActions(visible) {
-    // Group by machine
-    var groups = {};
-    var groupOrder = [];
-    for (var i = 0; i < visible.length; i++) {
-      var machine = visible[i].machine || 'unknown';
-      if (!groups[machine]) {
-        groups[machine] = [];
-        groupOrder.push(machine);
-      }
-      groups[machine].push(visible[i]);
-    }
-
-    // Sort groups: machines with waiting sessions first
-    groupOrder.sort(function (a, b) {
-      var aHasWaiting = groups[a].some(function (s) { return (s.state || '').toLowerCase() === 'waiting'; });
-      var bHasWaiting = groups[b].some(function (s) { return (s.state || '').toLowerCase() === 'waiting'; });
-      if (aHasWaiting && !bHasWaiting) return -1;
-      if (!aHasWaiting && bHasWaiting) return 1;
-      return a.localeCompare(b);
-    });
-
-    for (var g = 0; g < groupOrder.length; g++) {
-      var machineName = groupOrder[g];
-      var machineSessions = groups[machineName];
-
-      var groupEl = document.createElement('div');
-      groupEl.className = 'machine-group';
-      groupEl.dataset.machine = machineName;
-
-      // Check collapsed state from localStorage
-      var isCollapsed = localStorage.getItem('ah-group-' + machineName) === 'collapsed';
-      if (isCollapsed) groupEl.classList.add('collapsed');
-
-      // Header
-      var header = document.createElement('div');
-      header.className = 'machine-group-header';
-      header.innerHTML =
-        '<svg class="machine-group-chevron" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3,2 9,6 3,10"/></svg>' +
-        '<span class="machine-group-health"></span>' +
-        '<span class="machine-group-name">' + esc(machineName) + '</span>' +
-        '<span class="machine-group-count">' + machineSessions.length + '</span>';
-
-      header.addEventListener('click', function (name, el) {
-        return function () {
-          el.classList.toggle('collapsed');
-          localStorage.setItem('ah-group-' + name,
-            el.classList.contains('collapsed') ? 'collapsed' : 'expanded');
-        };
-      }(machineName, groupEl));
-
-      groupEl.appendChild(header);
-
-      // Sessions container
-      var sessionsEl = document.createElement('div');
-      sessionsEl.className = 'machine-group-sessions';
-
-      for (var s = 0; s < machineSessions.length; s++) {
-        sessionsEl.appendChild(createActionCard(machineSessions[s], false));
-      }
-
-      groupEl.appendChild(sessionsEl);
-      elContent.appendChild(groupEl);
-    }
-  }
-
-  // ================================================================
-  // Action Card
-  // ================================================================
-
-  function createActionCard(s, compact) {
+  function createTile(s) {
     var state = (s.state || 'idle').toLowerCase();
     var prompt = s.prompt;
     var hasTmux = !!s.tmux_session;
+    var sessionName = sessionDisplayName(s);
+    var age = (s.idle_seconds != null && prefs['pref-idle'] !== false) ? formatAge(s.idle_seconds) : '';
 
-    var card = document.createElement('div');
-    card.className = 'session-card state-' + state + (compact ? ' session-card-compact' : '');
-    card.dataset.sessionId = s.session_id;
+    var tile = document.createElement('div');
+    var isStale = s.idle_seconds != null && s.idle_seconds > 1800; // >30 min
+    var isSkill = (s.project || '').indexOf('skill:') === 0;
+    var isSubagent = !s.tmux_session && !isSkill;
+    var cls = 'tile state-' + state;
+    if (isStale) cls += ' tile-stale';
+    if (isSkill || isSubagent) cls += ' tile-background';
+    tile.className = cls;
+    tile.dataset.sessionId = s.session_id;
 
-    var idleText = '';
-    if (s.idle_seconds != null && prefs['pref-idle'] !== false) {
-      idleText = formatIdle(s.idle_seconds);
+    var html = '';
+    if (state === 'waiting' && prompt) {
+      html = buildWaitingTile(s, prompt, sessionName, age, hasTmux);
+    } else {
+      html = buildIdleTile(s, sessionName, age, state);
     }
 
-    var sessionName = s.session_name || shortProject(s.project) || 'Session';
+    tile.innerHTML = html;
+    wireTileActions(tile, s);
 
-    // Header
-    var headerHtml =
-      '<div class="card-header">' +
-        '<span class="card-session-name">' + esc(sessionName) + '</span>' +
-        (!prefs['pref-group-machine'] ? '<span class="card-machine-tag">' + esc(s.machine || 'unknown') + '</span>' : '') +
-        (!hasTmux ? '<span class="badge-monitoring">monitor</span>' : '') +
-        '<span class="card-state-badge ' + state + '">' + esc(state) + '</span>' +
-      '</div>';
+    return tile;
+  }
 
-    // Body
-    var bodyHtml = '';
-    var actionsHtml = '';
+  function buildWaitingTile(s, prompt, sessionName, age, hasTmux) {
+    var ptype = prompt.type || 'unknown';
+    var html = '';
 
-    if (state === 'waiting' && prompt && hasTmux) {
-      // Tmux session with prompt — show full interaction
-      switch (prompt.type) {
-        case 'permission':
-          bodyHtml = renderPermissionBody(prompt, compact);
-          actionsHtml = renderPermissionActions(s.session_id, prompt);
-          break;
-        case 'question':
-          bodyHtml = renderQuestionBody(prompt, compact);
-          actionsHtml = renderQuestionActions(s.session_id, prompt);
-          break;
-        case 'text_input':
-          bodyHtml = renderTextInputBody(prompt, compact);
-          actionsHtml = renderTextInputActions(s.session_id);
-          break;
-        default:
-          bodyHtml = '<div class="card-body">' + esc(prompt.raw_text || 'Waiting for input') + '</div>';
-          break;
+    // Header: project + tool badge + dismiss
+    html += '<div class="tile-header">';
+    html += '<span class="tile-name">' + esc(sessionName) + '</span>';
+    if (prompt.tool) {
+      html += '<span class="badge-tool">' + esc(prompt.tool) + '</span>';
+    }
+    if ((s.project || '').indexOf('skill:') === 0) {
+      html += '<span class="badge-skill">skill</span>';
+    } else if (!hasTmux) {
+      html += '<span class="badge-monitoring">sub</span>';
+    }
+    html += '<button class="tile-dismiss" data-action="dismiss" title="Hide tile">\u00d7</button>';
+    html += '</div>';
+
+    // Meta: machine + age
+    html += '<div class="tile-meta">';
+    html += '<span>@' + esc(s.machine || '?') + '</span>';
+    if (age) html += '<span class="tile-age">' + esc(age) + '</span>';
+    html += '</div>';
+
+    // Command/context preview (monospace code block)
+    if (prompt.command_preview) {
+      var preview = prompt.command_preview;
+      var truncated = preview.length > 100 ? preview.substring(0, 97) + '\u2026' : preview;
+      html += '<div class="tile-code">' + esc(truncated) + '</div>';
+    }
+
+    // Prompt question/description
+    if (ptype === 'question' && prompt.question) {
+      html += '<div class="tile-question">' + promptTypeIcon(ptype) + ' ' + esc(prompt.question) + '</div>';
+    } else if (ptype === 'permission') {
+      html += '<div class="tile-question">' + promptTypeIcon(ptype) + ' Allow?</div>';
+    } else if (ptype === 'text_input') {
+      html += '<div class="tile-question">\u276f Awaiting input</div>';
+    }
+
+    // Action buttons (only for tmux sessions)
+    if (hasTmux) {
+      html += buildTileActions(s, prompt);
+    }
+
+    return html;
+  }
+
+  function buildTileActions(s, prompt) {
+    var ptype = prompt.type || '';
+    var html = '';
+
+    if (ptype === 'permission') {
+      var choices = prompt.choices || [
+        { key: 'y', label: 'Yes' },
+        { key: 'n', label: 'No' }
+      ];
+      html += '<div class="tile-actions">';
+      for (var i = 0; i < choices.length; i++) {
+        var c = choices[i];
+        var cls;
+        if (c.key === 'y') cls = 'btn-allow';
+        else if (c.key === 'n') cls = 'btn-deny';
+        else if (c.key === 'a') cls = 'btn-always';
+        else cls = 'btn-secondary';
+        // Shorten long labels for tiles
+        var shortLabel = c.label;
+        if (shortLabel.length > 18) shortLabel = shortLabel.substring(0, 15) + '\u2026';
+        html += '<button class="btn btn-sm ' + cls + '" data-action="respond" data-key="' + esc(c.key) + '" title="' + esc(c.label) + '">' + esc(shortLabel) + '</button>';
       }
-    } else if (state === 'waiting' && prompt && !hasTmux) {
-      // Non-tmux: show prompt info but no response area
-      switch (prompt.type) {
-        case 'permission':
-          bodyHtml = renderPermissionBody(prompt, compact);
-          break;
-        case 'question':
-          bodyHtml = renderQuestionBody(prompt, compact);
-          break;
-        default:
-          bodyHtml = '<div class="card-body">' + esc(prompt.raw_text || 'Waiting for input') + '</div>';
-          break;
+      html += '</div>';
+
+    } else if (ptype === 'question') {
+      var qchoices = prompt.choices || [];
+      var isSelectInput = qchoices.length > 0 && qchoices[0].key && qchoices[0].key.indexOf('select:') === 0;
+      if (qchoices.length > 0) {
+        html += '<div class="tile-actions">';
+        for (var j = 0; j < qchoices.length; j++) {
+          var qlabel = qchoices[j].label;
+          if (qlabel.length > 18) qlabel = qlabel.substring(0, 15) + '\u2026';
+          // Style SelectInput choices: first=allow, last with "no"=deny
+          var qcls = 'btn-secondary';
+          if (isSelectInput) {
+            var lbl = qchoices[j].label.toLowerCase();
+            if (lbl === 'yes' || lbl === 'ok' || lbl === 'confirm') qcls = 'btn-allow';
+            else if (lbl.indexOf('no') === 0 || lbl === 'cancel' || lbl === 'deny') qcls = 'btn-deny';
+          }
+          html += '<button class="btn btn-sm ' + qcls + '" data-action="respond" data-key="' + esc(qchoices[j].key) + '" title="' + esc(qchoices[j].label) + '">' + esc(qlabel) + '</button>';
+        }
+        html += '</div>';
       }
-      // No actions for non-tmux
-    } else {
-      var toolInfo = s.last_tool ? 'Tool: ' + s.last_tool : '';
-      var projectInfo = shortProject(s.project);
-      bodyHtml =
-        '<div class="card-body card-body-minimal">' +
-          (projectInfo ? '<span class="card-info-item">' + esc(projectInfo) + '</span>' : '') +
-          (toolInfo ? '<span class="card-info-item">' + esc(toolInfo) + '</span>' : '') +
+      // Only show free text input for non-SelectInput questions
+      if (!isSelectInput) {
+        html += '<div class="tile-input-row">' +
+          '<input type="text" class="input-text tile-text-input" placeholder="Type answer\u2026">' +
+          '<button class="btn btn-sm btn-primary" data-action="send-text">\u23ce</button>' +
+          '</div>';
+      }
+
+    } else if (ptype === 'text_input') {
+      html += '<div class="tile-input-row">' +
+        '<input type="text" class="input-text tile-text-input" placeholder="Type response\u2026">' +
+        '<button class="btn btn-sm btn-primary" data-action="send-text">\u23ce</button>' +
         '</div>';
     }
 
-    // Timeline strip
-    var timelineHtml = '';
-    if (!compact) {
-      var timeline = getTimeline(s.session_id);
-      if (timeline.length > 1) {
-        timelineHtml = '<div class="card-timeline">';
-        for (var t = 0; t < timeline.length; t++) {
-          if (t > 0) timelineHtml += '<span class="timeline-connector"></span>';
-          timelineHtml += '<span class="timeline-dot ' + esc(timeline[t].state) + '" title="' + esc(timeline[t].state) + '"></span>';
-        }
-        timelineHtml += '</div>';
-      }
-    }
-
-    // Footer
-    var footerHtml =
-      '<div class="card-footer">' +
-        '<span class="card-idle">' + (idleText ? 'idle ' + idleText : '') + '</span>' +
-      '</div>';
-
-    card.innerHTML = headerHtml + bodyHtml + (compact ? '' : actionsHtml) + timelineHtml + footerHtml;
-
-    if (!compact && hasTmux) wireCardActions(card, s);
-
-    return card;
-  }
-
-  // ---- Permission cards ----
-
-  function renderPermissionBody(prompt, compact) {
-    var toolName = prompt.tool || 'Unknown tool';
-    var preview = prompt.command_preview || '';
-    if (compact && preview.length > 60) preview = preview.substring(0, 57) + '...';
-    return (
-      '<div class="card-body">' +
-        '<div class="card-prompt-tool">' + esc(toolName) + '</div>' +
-        (preview ? '<pre class="card-command-preview">' + esc(preview) + '</pre>' : '') +
-      '</div>'
-    );
-  }
-
-  function renderPermissionActions(sessionId, prompt) {
-    var choices = prompt.choices || [
-      { key: 'y', label: 'Allow' },
-      { key: 'n', label: 'Deny' },
-      { key: 'a', label: 'Always allow' }
-    ];
-    var html = '<div class="card-actions">';
-    for (var i = 0; i < choices.length; i++) {
-      var c = choices[i];
-      var btnClass = 'btn ';
-      if (c.key === 'y') btnClass += 'btn-allow';
-      else if (c.key === 'n') btnClass += 'btn-deny';
-      else btnClass += 'btn-secondary';
-      html += '<button class="' + btnClass + '" data-action="respond" data-key="' + esc(c.key) + '">' + esc(c.label) + '</button>';
-    }
-    html += '</div>';
     return html;
   }
 
-  // ---- Question cards ----
+  function buildIdleTile(s, sessionName, age, state) {
+    var html = '';
 
-  function renderQuestionBody(prompt, compact) {
-    var question = prompt.question || prompt.raw_text || 'Question';
-    if (compact && question.length > 80) question = question.substring(0, 77) + '...';
-    return '<div class="card-body">' + esc(question) + '</div>';
-  }
-
-  function renderQuestionActions(sessionId, prompt) {
-    var choices = prompt.choices || [];
-    var html = '<div class="card-actions">';
-    for (var i = 0; i < choices.length; i++) {
-      html += '<button class="btn btn-secondary" data-action="respond" data-key="' + esc(choices[i].key) + '">' + esc(choices[i].label) + '</button>';
+    // Header: project + state dot + badges + dismiss
+    html += '<div class="tile-header">';
+    html += '<span class="tile-name">' + esc(sessionName) + '</span>';
+    html += '<span class="tile-state-dot ' + esc(state) + '"></span>';
+    if ((s.project || '').indexOf('skill:') === 0) {
+      html += '<span class="badge-skill">skill</span>';
+    } else if (!s.tmux_session) {
+      html += '<span class="badge-monitoring">sub</span>';
     }
-    html += '<button class="btn btn-ghost btn-other" data-action="show-input">Other...</button>';
+    html += '<button class="tile-dismiss" data-action="dismiss" title="Hide tile">\u00d7</button>';
     html += '</div>';
-    html += '<div class="card-input-row hidden">' +
-      '<input type="text" class="input-text card-free-input" placeholder="Type your response...">' +
-      '<button class="btn btn-primary btn-send-free" data-action="send-free">Send</button>' +
-      '</div>';
+
+    // Meta
+    html += '<div class="tile-meta">';
+    html += '<span>@' + esc(s.machine || '?') + '</span>';
+    if (age) html += '<span class="tile-age">' + esc(age) + '</span>';
+    html += '</div>';
+
+    // Last tool (clean up hook- prefix)
+    if (s.last_tool) {
+      var toolLabel = s.last_tool.replace(/^hook-/, '');
+      html += '<div class="tile-last-tool">' + esc(toolLabel) + '</div>';
+    }
+
+    // State label
+    html += '<div class="tile-state-label ' + esc(state) + '">' + esc(state.toUpperCase()) + '</div>';
+
     return html;
   }
 
-  // ---- Text input cards ----
+  // ---- Tile Event Wiring ----
 
-  function renderTextInputBody(prompt, compact) {
-    var rawText = prompt.raw_text || '';
-    var lines = rawText.split('\n');
-    var contextLines = lines.slice(-4).join('\n');
-    if (compact && contextLines.length > 100) contextLines = contextLines.substring(0, 97) + '...';
-    return '<div class="card-body"><pre class="card-text-context">' + esc(contextLines) + '</pre></div>';
-  }
-
-  function renderTextInputActions(sessionId) {
-    return (
-      '<div class="card-input-row">' +
-        '<input type="text" class="input-text card-text-response" placeholder="Type your response...">' +
-        '<button class="btn btn-primary btn-send-text" data-action="send-text">Send</button>' +
-      '</div>'
-    );
-  }
-
-  // ---- Wire card events ----
-
-  function wireCardActions(card, session) {
-    card.addEventListener('click', function (e) {
+  function wireTileActions(tile, session) {
+    tile.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-action]');
-      if (!btn) return;
+      if (!btn) {
+        // Click on tile body: open terminal slide if tmux available
+        if (!e.target.closest('input') && session.tmux_session) {
+          openTerminalSlide(session.session_id);
+        }
+        return;
+      }
+
       var action = btn.dataset.action;
+
+      if (action === 'dismiss') {
+        dismissedSessions[session.session_id] = true;
+        renderDashboard();
+        showToast('Tile hidden', 'info');
+        return;
+      }
 
       if (action === 'respond') {
         var key = btn.dataset.key;
         if (key) {
           sendRespond(session.session_id, key);
-          card.querySelectorAll('[data-action="respond"]').forEach(function (b) {
-            b.disabled = true; b.classList.add('btn-sent');
+          tile.querySelectorAll('[data-action="respond"]').forEach(function (b) {
+            b.disabled = true;
+            b.classList.add('btn-sent');
           });
-          btn.textContent = 'Sent';
-        }
-      }
-
-      if (action === 'show-input') {
-        var inputRow = card.querySelector('.card-input-row');
-        if (inputRow) {
-          inputRow.classList.remove('hidden');
-          var input = inputRow.querySelector('.card-free-input');
-          if (input) input.focus();
-        }
-        btn.classList.add('hidden');
-      }
-
-      if (action === 'send-free') {
-        var input = card.querySelector('.card-free-input');
-        if (input && input.value.trim()) {
-          sendRespond(session.session_id, input.value.trim() + '\n');
-          input.disabled = true;
-          btn.disabled = true;
-          btn.textContent = 'Sent';
+          btn.textContent = '\u2713 Sent';
+          tile.classList.add('tile-sent');
         }
       }
 
       if (action === 'send-text') {
-        var input = card.querySelector('.card-text-response');
+        var input = tile.querySelector('.tile-text-input');
         if (input && input.value.trim()) {
           sendRespond(session.session_id, input.value.trim() + '\n');
           input.disabled = true;
           btn.disabled = true;
-          btn.textContent = 'Sent';
+          btn.textContent = '\u2713';
+          tile.classList.add('tile-sent');
         }
       }
     });
 
-    card.addEventListener('keydown', function (e) {
+    // Enter key in text input
+    tile.addEventListener('keydown', function (e) {
       if (e.key !== 'Enter') return;
       var input = e.target;
-      if (!input.classList.contains('input-text')) return;
+      if (!input.classList.contains('tile-text-input')) return;
       e.preventDefault();
       var value = input.value.trim();
       if (!value) return;
       sendRespond(session.session_id, value + '\n');
       input.disabled = true;
       var sendBtn = input.parentElement.querySelector('[data-action]');
-      if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = 'Sent'; }
+      if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = '\u2713'; }
+      tile.classList.add('tile-sent');
     });
   }
 
   // ================================================================
-  // Terminal Mode
+  // Terminal Slide-Up Panel
   // ================================================================
 
-  function renderTerminals(visible) {
-    if (window.TerminalManager) {
-      window.TerminalManager.renderTerminals(elContent, visible);
-    } else {
-      visible.forEach(function (s) {
-        var panel = document.createElement('div');
-        panel.className = 'terminal-panel';
-        panel.innerHTML =
-          '<div class="terminal-panel-header">' +
-            '<span class="terminal-panel-title">' + esc(s.machine || '') + ' / ' + esc(shortProject(s.project)) + '</span>' +
-          '</div>' +
-          '<div class="terminal-body" style="min-height:200px;color:var(--text-muted);padding:16px;font-size:13px;">Loading...</div>';
-        elContent.appendChild(panel);
-      });
+  function openTerminalSlide(sessionId) {
+    var slideEl = document.getElementById('terminal-slide');
+    var headerEl = document.getElementById('terminal-slide-header');
+    var bodyEl = document.getElementById('terminal-slide-body');
+    if (!slideEl || !headerEl || !bodyEl) return;
+
+    // Find session
+    var session = null;
+    for (var i = 0; i < sessions.length; i++) {
+      if (sessions[i].session_id === sessionId) { session = sessions[i]; break; }
     }
+    if (!session || !session.tmux_session) return;
+
+    // Close existing if different
+    if (terminalSlideSessionId && terminalSlideSessionId !== sessionId) {
+      if (window.TerminalManager) window.TerminalManager.destroyTerminal(terminalSlideSessionId);
+    }
+
+    terminalSlideSessionId = sessionId;
+
+    var sessionName = sessionDisplayName(session);
+    headerEl.innerHTML =
+      '<span>' + esc(session.machine || '') + ' / ' + esc(sessionName) + '</span>' +
+      '<button class="terminal-slide-close" data-action="close-terminal">\u2715</button>';
+
+    headerEl.querySelector('[data-action="close-terminal"]').addEventListener('click', closeTerminalSlide);
+
+    bodyEl.innerHTML = '';
+
+    if (window.TerminalManager) {
+      window.TerminalManager.renderSingleTerminal(bodyEl, session);
+    }
+
+    slideEl.classList.add('open');
+    slideEl.setAttribute('aria-hidden', 'false');
+
+    // Wire swipe-down to close
+    wireSlideSwipe(slideEl);
   }
 
-  // ================================================================
-  // Split Mode
-  // ================================================================
+  function closeTerminalSlide() {
+    var slideEl = document.getElementById('terminal-slide');
+    if (!slideEl) return;
 
-  function renderSplit(visible) {
-    var left = document.createElement('div');
-    left.className = 'split-left';
-    var right = document.createElement('div');
-    right.className = 'split-right';
+    slideEl.classList.remove('open');
+    slideEl.setAttribute('aria-hidden', 'true');
 
-    if (!splitSelectedId || !visible.find(function (s) { return s.session_id === splitSelectedId; })) {
-      splitSelectedId = visible[0] ? visible[0].session_id : null;
+    if (terminalSlideSessionId && window.TerminalManager) {
+      window.TerminalManager.destroyTerminal(terminalSlideSessionId);
     }
+    terminalSlideSessionId = null;
 
-    visible.forEach(function (s) {
-      var card = createActionCard(s, true);
-      if (s.session_id === splitSelectedId) card.classList.add('session-card-selected');
-      card.style.cursor = 'pointer';
-      card.addEventListener('click', function () {
-        splitSelectedId = s.session_id;
-        left.querySelectorAll('.session-card').forEach(function (c) { c.classList.remove('session-card-selected'); });
-        card.classList.add('session-card-selected');
-        renderSplitTerminal(right, s);
-      });
-      left.appendChild(card);
-    });
-
-    elContent.appendChild(left);
-    elContent.appendChild(right);
-
-    var selected = visible.find(function (s) { return s.session_id === splitSelectedId; });
-    if (selected) {
-      renderSplitTerminal(right, selected);
-    } else {
-      right.innerHTML = '<div class="split-empty"><span>Select a session</span></div>';
-    }
+    var bodyEl = document.getElementById('terminal-slide-body');
+    if (bodyEl) bodyEl.innerHTML = '';
   }
 
-  function renderSplitTerminal(container, session) {
-    container.innerHTML = '';
-    if (window.TerminalManager) {
-      window.TerminalManager.renderSingleTerminal(container, session);
-    } else {
-      container.innerHTML =
-        '<div class="terminal-panel">' +
-          '<div class="terminal-panel-header"><span class="terminal-panel-title">' +
-          esc(session.machine || '') + ' / ' + esc(shortProject(session.project)) +
-          '</span></div>' +
-          '<div class="terminal-body" style="min-height:300px;color:var(--text-muted);padding:16px;">Loading...</div>' +
-        '</div>';
-    }
+  function wireSlideSwipe(slideEl) {
+    var startY = 0;
+    var handle = slideEl.querySelector('.terminal-slide-handle');
+    if (!handle) return;
+
+    handle.addEventListener('touchstart', function (e) {
+      startY = e.touches[0].clientY;
+    }, { passive: true });
+
+    handle.addEventListener('touchend', function (e) {
+      var dy = e.changedTouches[0].clientY - startY;
+      if (dy > 50) closeTerminalSlide();
+    }, { passive: true });
   }
 
   // ---- Preferences Panel ----
@@ -957,7 +935,6 @@
 
     elContent = document.getElementById('content');
     elConnDot = document.getElementById('conn-dot');
-    elModeTabs = document.getElementById('mode-tabs');
     elPrefsBackdrop = document.getElementById('prefs-backdrop');
     elPrefsPanel = document.getElementById('prefs-panel');
     elHeaderStats = document.getElementById('header-stats');
@@ -965,18 +942,11 @@
     syncPrefsToDOM();
     initPrefsListeners();
 
-    if (elModeTabs) {
-      elModeTabs.addEventListener('click', function (e) {
-        var tab = e.target.closest('.mode-tab');
-        if (tab && tab.dataset.mode) setMode(tab.dataset.mode);
-      });
-    }
-
     var btnSettings = document.getElementById('btn-settings');
     if (btnSettings) btnSettings.addEventListener('click', togglePrefs);
     if (elPrefsBackdrop) elPrefsBackdrop.addEventListener('click', closePrefs);
 
-    renderCurrentMode();
+    renderDashboard();
     connectWS();
     registerSW();
   }
@@ -993,18 +963,17 @@
     sessions: function () { return sessions; },
     wsSend: wsSend,
     sendRespond: sendRespond,
-    formatIdle: formatIdle,
-    setMode: setMode,
-    currentMode: function () { return currentMode; },
+    formatIdle: formatAge,
     connState: function () { return connState; },
     esc: esc,
     shortProject: shortProject,
     prefs: function () { return prefs; },
     getVisibleSessions: getVisibleSessions,
-    renderCurrentMode: renderCurrentMode,
-    splitSelectedId: function () { return splitSelectedId; },
-    createActionCard: createActionCard,
-    showToast: showToast
+    renderDashboard: renderDashboard,
+    createTile: createTile,
+    showToast: showToast,
+    openTerminalSlide: openTerminalSlide,
+    closeTerminalSlide: closeTerminalSlide
   };
 
 })();

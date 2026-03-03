@@ -288,13 +288,18 @@ def create_app(machine_id: str, token: str) -> FastAPI:
         tmux_session = data.get("tmux_session", "")
         keys = data.get("keys", "")
         if not tmux_session or not keys:
+            logger.warning("Respond rejected: missing tmux_session=%r or keys=%r", tmux_session, keys)
             return Response(status_code=400, content="tmux_session and keys required")
 
         monitor = getattr(app.state, "attention_monitor", None)
         if not monitor:
+            logger.warning("Respond rejected: attention monitor not running")
             return Response(status_code=503, content="Attention monitor not running")
 
+        logger.info("Injecting response into tmux=%s keys=%r", tmux_session, keys)
         success = monitor._inject_response(tmux_session, keys)
+        if not success:
+            logger.warning("tmux send-keys failed for session=%s", tmux_session)
         return {"status": "sent" if success else "failed", "tmux_session": tmux_session}
 
     @app.get("/api/attention/terminal/{tmux_session:path}")
