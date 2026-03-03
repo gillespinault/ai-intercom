@@ -43,6 +43,10 @@ NOTIFICATION_DATA=""
 case "$ACTION" in
     start|stop|working)
         TOOL_TIME=$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")
+        # Preserve notification_data from existing heartbeat (B2 fix)
+        if [ -f "$FILE" ]; then
+            NOTIFICATION_DATA=$(jq '.notification_data // ""' "$FILE" 2>/dev/null || echo '""')
+        fi
         ;;
     waiting)
         # Set a timestamp far in the past so idle_seconds >> 15s → WAITING

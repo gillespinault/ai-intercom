@@ -26,6 +26,7 @@ from src.shared.models import (
     AttentionHeartbeat,
     AttentionSession,
     AttentionState,
+    DetectedPrompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ class AttentionMonitor:
         self._poll_interval = poll_interval
 
         self._tracked: dict[str, AttentionSession] = {}
+        self._last_prompt: dict[str, DetectedPrompt] = {}
         self._running = False
         self._stop_event: asyncio.Event = asyncio.Event()
 
@@ -190,7 +192,7 @@ class AttentionMonitor:
             state = self._determine_state(idle_seconds)
 
             # If waiting, try to capture prompt details.
-            # Priority: tmux terminal capture > notification_data fallback.
+            # Priority: tmux terminal capture > notification_data fallback > cached prompt (B2).
             prompt = None
             if state == AttentionState.WAITING:
                 if hb.tmux_session:
@@ -199,6 +201,12 @@ class AttentionMonitor:
                         prompt = parse_terminal_output(raw_output)
                 if prompt is None and hb.notification_data:
                     prompt = parse_notification_data(hb.notification_data)
+                # Cache the prompt for B2 race condition protection
+                if prompt is not None:
+                    self._last_prompt[hb.session_id] = prompt
+            else:
+                # Not WAITING: reuse cached prompt if available (B2 fix)
+                prompt = self._last_prompt.get(hb.session_id)
 
             session = AttentionSession(
                 session_id=hb.session_id,
@@ -234,6 +242,7 @@ class AttentionMonitor:
         ended_ids = set(self._tracked.keys()) - seen_session_ids
         for sid in ended_ids:
             ended_session = self._tracked.pop(sid)
+            self._last_prompt.pop(sid, None)  # B2: clean prompt cache
             ended_session.state = AttentionState.ENDED
             ended_session.state_since = now.isoformat()
             events.append({"type": "session_ended", "session": ended_session})

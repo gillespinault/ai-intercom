@@ -360,6 +360,70 @@ class TestRunLoop:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# TestPromptCache (B2 fix)
+# ---------------------------------------------------------------------------
+
+
+class TestPromptCache:
+    @pytest.mark.asyncio
+    async def test_prompt_cached_after_waiting_to_working(self, monitor, sessions_dir):
+        """Prompt detected in WAITING should persist when session transitions to WORKING."""
+        pid = os.getpid()
+        sid = f"sess-{pid}"
+        notification = json.dumps({"tool": "AskUser", "message": "Pick an option?"})
+
+        # Poll 1: WAITING with notification_data → prompt detected
+        write_heartbeat(
+            sessions_dir,
+            pid=pid,
+            last_tool_time=_iso_past(60),
+            notification_data=notification,
+        )
+        events1 = await monitor.poll_once()
+        assert len(events1) == 1
+        assert events1[0]["session"].state == AttentionState.WAITING
+        assert events1[0]["session"].prompt is not None
+        cached_prompt = events1[0]["session"].prompt
+
+        # Poll 2: transition to WORKING (recent timestamp, no notification_data)
+        write_heartbeat(
+            sessions_dir,
+            pid=pid,
+            last_tool_time=_iso_now(),
+            notification_data="",
+        )
+        events2 = await monitor.poll_once()
+        assert len(events2) == 1
+        assert events2[0]["type"] == "state_changed"
+        assert events2[0]["session"].state == AttentionState.WORKING
+        # B2 fix: prompt should still be available from cache
+        assert events2[0]["session"].prompt is not None
+        assert events2[0]["session"].prompt.raw_text == cached_prompt.raw_text
+
+    @pytest.mark.asyncio
+    async def test_prompt_cache_cleared_on_session_end(self, monitor, sessions_dir):
+        """Prompt cache should be cleaned up when session ends."""
+        pid = os.getpid()
+        sid = f"sess-{pid}"
+        notification = json.dumps({"tool": "AskUser", "message": "Pick an option?"})
+
+        # Poll 1: WAITING with prompt
+        hb_path = write_heartbeat(
+            sessions_dir,
+            pid=pid,
+            last_tool_time=_iso_past(60),
+            notification_data=notification,
+        )
+        await monitor.poll_once()
+        assert sid in monitor._last_prompt
+
+        # Remove heartbeat → session ends
+        os.remove(hb_path)
+        await monitor.poll_once()
+        assert sid not in monitor._last_prompt
+
+
 class TestResync:
     @pytest.mark.asyncio
     async def test_resync_pushes_all_sessions(self, monitor, sessions_dir):
