@@ -2,6 +2,32 @@
 
 All notable changes to AI-Intercom are documented here.
 
+## [0.5.0] - 2026-03-03
+
+### Added
+- **PWA redesign** -- Industrial Ops Console aesthetic with IBM Plex Mono typography, dual accent system (coral/teal), scanline overlay, and radar brand animation
+- **Sound alerts** -- Web Audio API two-tone alert (880Hz → 660Hz) when sessions enter WAITING state, with vibration on mobile (200ms-100ms-200ms pattern)
+- **Toast notifications** -- Connection state changes, response confirmations, new/ended sessions shown as auto-dismissing toast overlays
+- **Machine grouping** -- Sessions grouped by machine with collapsible headers, health badges, and collapse state persisted in localStorage
+- **Event timeline** -- EKG-style dot strip per session showing last 10 state transitions (WORKING → THINKING → WAITING) with timestamps
+- **Header stats** -- Live count badges in the header showing working/thinking/waiting session totals with colored dot indicators
+- **Non-tmux session enrichment** -- `parse_notification_data()` extracts prompt info from Claude Code hook Notification payloads as fallback when tmux is unavailable
+- **`notification_data` field** -- `AttentionHeartbeat` model includes hook notification payload for non-tmux prompt detection
+- **Script serving endpoint** -- `GET /api/scripts/{name}` serves heartbeat scripts to remote daemons during installation
+- **Stale session cleanup** -- `AttentionStore` periodically removes sessions not updated for >5 minutes, broadcasting `session_ended` events
+- **`last_update` tracking** -- `AttentionSession` model tracks when each session was last updated by the hub
+- **Install.sh hooks setup** -- Installer now downloads `cc-heartbeat.sh` from hub and configures Claude Code hooks (SessionStart, Stop, Notification, UserPromptSubmit)
+- **11 new tests** -- `parse_notification_data` (10 tests), stale session cleanup (4 tests)
+
+### Changed
+- **Terminal theme** -- Enhanced ANSI color theme with bright variants (brightRed, brightGreen, etc.) matching the Industrial Ops Console palette
+- **Tmux-centric UX** -- Sessions with tmux get full interaction (terminal + response area); sessions without tmux show "monitor only" badge with prompt info but no response controls
+- **PWA service worker** -- Cache version bumped to v3 for redesigned assets
+- **Manifest** -- Updated theme colors to match new dark palette (#0a0e1a)
+
+### Fixed
+- **HTTPS access** -- Documented proper setup via Traefik dynamic config + VPS nginx API instead of `tailscale serve` which caused port 443 conflict taking down all production HTTPS sites
+
 ## [0.4.0] - 2026-03-02
 
 ### Added

@@ -3,8 +3,8 @@
   "short_name": "AttHub",
   "start_url": "/attention",
   "display": "standalone",
-  "background_color": "#1a1a2e",
-  "theme_color": "#e94560",
+  "background_color": "#0a0e1a",
+  "theme_color": "#0a0e1a",
   "orientation": "any",
   "icons": []
 }

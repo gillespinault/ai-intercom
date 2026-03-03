@@ -1,7 +1,7 @@
 /* ================================================================
-   Attention Hub -- Terminal Panel Manager
-   Manages xterm.js instances, content polling, prompt overlays,
-   and keyboard input forwarding.
+   Attention Hub — Terminal Panel Manager
+   xterm.js instances, content polling, prompt overlays,
+   non-tmux detection, enhanced ANSI color theme.
    ================================================================ */
 
 (function () {
@@ -12,7 +12,6 @@
   /** Map of session_id -> { term, container, pollTimer, lastContent } */
   var terminals = {};
 
-  /** Poll interval in milliseconds */
   var POLL_INTERVAL = 3000;
 
   // ---- Helpers ----
@@ -20,19 +19,42 @@
   var hub = function () { return window.AttentionHub || {}; };
   var esc = function (s) { return hub().esc ? hub().esc(s) : String(s || ''); };
   var shortProject = function (p) { return hub().shortProject ? hub().shortProject(p) : String(p || ''); };
-  var formatIdle = function (s) { return hub().formatIdle ? hub().formatIdle(s) : String(s || ''); };
+
+  // ---- Enhanced ANSI Theme ----
+
+  var XTERM_THEME = {
+    background:       '#060a12',
+    foreground:       '#e8ecf1',
+    cursor:           '#e94560',
+    cursorAccent:     '#060a12',
+    selectionBackground: '#e9456035',
+    selectionForeground: '#ffffff',
+
+    // Normal colors
+    black:   '#1a2238',
+    red:     '#e94560',
+    green:   '#00d4aa',
+    yellow:  '#ffb347',
+    blue:    '#4a7dff',
+    magenta: '#c77dff',
+    cyan:    '#00bcd4',
+    white:   '#a8b2c1',
+
+    // Bright variants
+    brightBlack:   '#4a5168',
+    brightRed:     '#ff6b81',
+    brightGreen:   '#2effc7',
+    brightYellow:  '#ffd37d',
+    brightBlue:    '#7da5ff',
+    brightMagenta: '#dda0ff',
+    brightCyan:    '#40e0d0',
+    brightWhite:   '#f0f4f8'
+  };
 
   // ---- Terminal Instance Management ----
 
-  /**
-   * Create or retrieve a terminal instance for a session.
-   * @param {string} sessionId
-   * @returns {Object} terminal state object
-   */
   function getOrCreateTerminal(sessionId) {
-    if (terminals[sessionId]) {
-      return terminals[sessionId];
-    }
+    if (terminals[sessionId]) return terminals[sessionId];
 
     var state = {
       term: null,
@@ -46,44 +68,31 @@
     return state;
   }
 
-  /**
-   * Initialize an xterm.js instance inside a DOM container.
-   */
   function initXterm(termState, bodyEl) {
     if (typeof Terminal === 'undefined') {
-      bodyEl.innerHTML = '<div style="color:var(--text-muted);padding:16px;font-size:13px;">Loading terminal library...</div>';
+      bodyEl.innerHTML = '<div style="color:var(--text-muted);padding:16px;font-size:12px;font-family:inherit;">Loading terminal...</div>';
       return;
     }
 
     var term = new Terminal({
-      theme: {
-        background: '#0c0c1a',
-        foreground: '#eee',
-        cursor: '#e94560',
-        selectionBackground: '#e9456044',
-        black: '#0c0c1a',
-        red: '#e94560',
-        green: '#4caf50',
-        yellow: '#ff9800',
-        blue: '#0f3460',
-        magenta: '#9c27b0',
-        cyan: '#00bcd4',
-        white: '#eee'
-      },
-      fontSize: 13,
-      fontFamily: "'Fira Code', 'Cascadia Code', 'JetBrains Mono', monospace",
+      theme: XTERM_THEME,
+      fontSize: 12,
+      fontFamily: "'IBM Plex Mono', 'Menlo', 'Consolas', monospace",
+      fontWeight: 400,
+      fontWeightBold: 600,
       cursorBlink: false,
       cursorStyle: 'block',
       scrollback: 2000,
       convertEol: true,
       disableStdin: false,
-      allowProposedApi: true
+      allowProposedApi: true,
+      lineHeight: 1.2
     });
 
     term.open(bodyEl);
     termState.term = term;
 
-    // Forward keyboard input to session via wsSend
+    // Forward keyboard input
     term.onData(function (data) {
       if (hub().wsSend) {
         hub().wsSend({
@@ -94,14 +103,13 @@
       }
     });
 
-    // Auto-resize on container size change
+    // Auto-resize
     try {
       var resizeObserver = new ResizeObserver(function () {
-        // Fit terminal to container -- basic column calculation
         if (term && bodyEl.clientWidth > 0) {
-          var charWidth = 7.8; // approximate for 13px monospace
-          var cols = Math.floor((bodyEl.clientWidth - 16) / charWidth);
-          var rows = Math.floor((bodyEl.clientHeight - 8) / 17); // line height ~17px
+          var charWidth = 7.2;
+          var cols = Math.floor((bodyEl.clientWidth - 12) / charWidth);
+          var rows = Math.floor((bodyEl.clientHeight - 6) / 15.6);
           if (cols > 10 && rows > 3) {
             term.resize(Math.min(cols, 200), Math.min(rows, 60));
           }
@@ -109,14 +117,9 @@
       });
       resizeObserver.observe(bodyEl);
       termState._resizeObserver = resizeObserver;
-    } catch (e) {
-      // ResizeObserver not available, skip
-    }
+    } catch (e) { /* ResizeObserver unavailable */ }
   }
 
-  /**
-   * Fetch terminal content from API and update xterm.
-   */
   function fetchTerminalContent(termState) {
     var url = '/api/attention/terminal/' + encodeURIComponent(termState.sessionId);
     fetch(url)
@@ -130,35 +133,21 @@
           termState.term.clear();
           termState.term.write(content);
           termState.lastContent = content;
-
-          // Auto-scroll if preference enabled
           var prefs = hub().prefs ? hub().prefs() : {};
-          if (prefs['pref-autoscroll'] !== false) {
-            termState.term.scrollToBottom();
-          }
+          if (prefs['pref-autoscroll'] !== false) termState.term.scrollToBottom();
         }
       })
-      .catch(function () {
-        // Silently ignore fetch errors (session may have ended)
-      });
+      .catch(function () { /* silently ignore */ });
   }
 
-  /**
-   * Start polling for terminal content.
-   */
   function startPolling(termState) {
     if (termState.pollTimer) return;
-    // Initial fetch
     fetchTerminalContent(termState);
-    // Poll every POLL_INTERVAL
     termState.pollTimer = setInterval(function () {
       fetchTerminalContent(termState);
     }, POLL_INTERVAL);
   }
 
-  /**
-   * Stop polling for a terminal.
-   */
   function stopPolling(termState) {
     if (termState.pollTimer) {
       clearInterval(termState.pollTimer);
@@ -166,33 +155,17 @@
     }
   }
 
-  /**
-   * Destroy a terminal instance.
-   */
   function destroyTerminal(sessionId) {
     var termState = terminals[sessionId];
     if (!termState) return;
-
     stopPolling(termState);
-
-    if (termState._resizeObserver) {
-      termState._resizeObserver.disconnect();
-    }
-
-    if (termState.term) {
-      termState.term.dispose();
-    }
-
+    if (termState._resizeObserver) termState._resizeObserver.disconnect();
+    if (termState.term) termState.term.dispose();
     delete terminals[sessionId];
   }
 
   // ---- Prompt Overlay ----
 
-  /**
-   * Create a prompt overlay on top of a terminal panel.
-   * @param {HTMLElement} panelEl - the .terminal-panel element
-   * @param {Object} session - session with prompt data
-   */
   function createPromptOverlay(panelEl, session) {
     var prompt = session.prompt;
     if (!prompt) return;
@@ -214,12 +187,9 @@
         if (preview) {
           html += '<pre class="overlay-command">' + esc(preview.length > 120 ? preview.substring(0, 117) + '...' : preview) + '</pre>';
         }
-        html += '</div>';
-        html += '<div class="overlay-actions">';
+        html += '</div><div class="overlay-actions">';
         var choices = prompt.choices || [
-          { key: 'y', label: 'Allow' },
-          { key: 'n', label: 'Deny' },
-          { key: 'a', label: 'Always allow' }
+          { key: 'y', label: 'Allow' }, { key: 'n', label: 'Deny' }, { key: 'a', label: 'Always' }
         ];
         for (var i = 0; i < choices.length; i++) {
           var c = choices[i];
@@ -233,9 +203,9 @@
         var question = prompt.question || prompt.raw_text || 'Question';
         html += '<div class="overlay-prompt-text">' + esc(question) + '</div>';
         html += '<div class="overlay-actions">';
-        var qchoices = prompt.choices || [];
-        for (var j = 0; j < qchoices.length; j++) {
-          html += '<button class="btn btn-secondary" data-overlay-key="' + esc(qchoices[j].key) + '">' + esc(qchoices[j].label) + '</button>';
+        var qc = prompt.choices || [];
+        for (var j = 0; j < qc.length; j++) {
+          html += '<button class="btn btn-secondary" data-overlay-key="' + esc(qc[j].key) + '">' + esc(qc[j].label) + '</button>';
         }
         html += '</div>';
         break;
@@ -245,7 +215,7 @@
         var contextLines = rawText.split('\n').slice(-3).join('\n');
         html += '<div class="overlay-prompt-text"><pre class="overlay-context">' + esc(contextLines) + '</pre></div>';
         html += '<div class="overlay-input-row">';
-        html += '<input type="text" class="input-text overlay-text-input" placeholder="Type your response...">';
+        html += '<input type="text" class="input-text overlay-text-input" placeholder="Type response...">';
         html += '<button class="btn btn-primary" data-overlay-action="send-text">Send</button>';
         html += '</div>';
         break;
@@ -258,10 +228,7 @@
     overlay.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-overlay-key]');
       if (btn) {
-        var key = btn.dataset.overlayKey;
-        if (hub().sendRespond) {
-          hub().sendRespond(session.session_id, key);
-        }
+        if (hub().sendRespond) hub().sendRespond(session.session_id, btn.dataset.overlayKey);
         overlay.classList.remove('visible');
         setTimeout(function () { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 300);
         return;
@@ -271,23 +238,19 @@
       if (sendBtn) {
         var input = overlay.querySelector('.overlay-text-input');
         if (input && input.value.trim()) {
-          if (hub().sendRespond) {
-            hub().sendRespond(session.session_id, input.value.trim() + '\n');
-          }
+          if (hub().sendRespond) hub().sendRespond(session.session_id, input.value.trim() + '\n');
           overlay.classList.remove('visible');
           setTimeout(function () { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 300);
         }
         return;
       }
 
-      // Dismiss overlay on clicking backdrop
       if (e.target === overlay) {
         overlay.classList.remove('visible');
         setTimeout(function () { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 300);
       }
     });
 
-    // Enter key on text input
     var textInput = inner.querySelector('.overlay-text-input');
     if (textInput) {
       textInput.addEventListener('keydown', function (e) {
@@ -305,12 +268,9 @@
 
     // Touch swipe down to dismiss
     var startY = 0;
-    overlay.addEventListener('touchstart', function (e) {
-      startY = e.touches[0].clientY;
-    }, { passive: true });
+    overlay.addEventListener('touchstart', function (e) { startY = e.touches[0].clientY; }, { passive: true });
     overlay.addEventListener('touchend', function (e) {
-      var endY = e.changedTouches[0].clientY;
-      if (endY - startY > 60) {
+      if (e.changedTouches[0].clientY - startY > 60) {
         overlay.classList.remove('visible');
         setTimeout(function () { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 300);
       }
@@ -321,14 +281,10 @@
 
   // ---- Build Terminal Panel ----
 
-  /**
-   * Build a full terminal panel DOM element for a session.
-   * @param {Object} session
-   * @returns {HTMLElement}
-   */
   function buildTerminalPanel(session) {
     var state = (session.state || 'idle').toLowerCase();
     var sessionName = session.session_name || shortProject(session.project) || 'Session';
+    var hasTmux = !!session.tmux_session;
 
     var panel = document.createElement('div');
     panel.className = 'terminal-panel';
@@ -340,112 +296,85 @@
     header.innerHTML =
       '<span class="terminal-panel-machine">' + esc(session.machine || '') + '</span>' +
       '<span class="terminal-panel-title">' + esc(sessionName) + '</span>' +
-      '<span class="card-state-badge ' + state + '" style="margin-left:auto;">' + esc(state) + '</span>';
+      (!hasTmux ? '<span class="badge-monitoring" style="margin-left:auto;">monitor only</span>' : '') +
+      '<span class="card-state-badge ' + state + '" style="margin-left:' + (hasTmux ? 'auto' : 'var(--sp-2)') + ';">' + esc(state) + '</span>';
     panel.appendChild(header);
 
-    // Body (terminal will be mounted here)
+    // Body
     var body = document.createElement('div');
     body.className = 'terminal-body';
     panel.appendChild(body);
 
-    // Initialize xterm.js
-    var termState = getOrCreateTerminal(session.session_id);
-    termState.container = body;
+    if (hasTmux) {
+      // Initialize xterm.js for tmux sessions
+      var termState = getOrCreateTerminal(session.session_id);
+      termState.container = body;
 
-    // Wait a tick for DOM insertion, then init xterm
-    requestAnimationFrame(function () {
-      if (body.clientWidth > 0) {
-        initXterm(termState, body);
-        startPolling(termState);
-      } else {
-        // Retry after a short delay (DOM may not be ready)
-        setTimeout(function () {
+      requestAnimationFrame(function () {
+        if (body.clientWidth > 0) {
           initXterm(termState, body);
           startPolling(termState);
-        }, 100);
-      }
-    });
-
-    // Add prompt overlay if session is waiting
-    if (state === 'waiting' && session.prompt) {
-      requestAnimationFrame(function () {
-        createPromptOverlay(panel, session);
+        } else {
+          setTimeout(function () {
+            initXterm(termState, body);
+            startPolling(termState);
+          }, 100);
+        }
       });
+
+      // Prompt overlay for waiting tmux sessions
+      if (state === 'waiting' && session.prompt) {
+        requestAnimationFrame(function () { createPromptOverlay(panel, session); });
+      }
+    } else {
+      // Non-tmux: show monitoring-only placeholder
+      body.innerHTML =
+        '<div class="terminal-no-tmux">' +
+          '<div class="terminal-no-tmux-icon">\u25C9</div>' +
+          '<div>No tmux session attached</div>' +
+          '<div style="opacity:0.5;">Terminal view unavailable</div>' +
+        '</div>';
     }
 
     return panel;
   }
 
-  // ---- Public API (called by app.js) ----
+  // ---- Public API ----
 
-  /**
-   * Render all terminals in the terminals view.
-   */
   function renderTerminals(container, sessions) {
-    // Destroy all terminals that no longer exist
     cleanupStaleTerminals(sessions);
-
     sessions.forEach(function (s) {
-      // Destroy existing terminal for this session (will be re-created)
       destroyTerminal(s.session_id);
-      var panel = buildTerminalPanel(s);
-      container.appendChild(panel);
+      container.appendChild(buildTerminalPanel(s));
     });
   }
 
-  /**
-   * Render a single terminal in a container (used by split mode).
-   */
   function renderSingleTerminal(container, session) {
-    // Destroy existing terminal for this session
     destroyTerminal(session.session_id);
-    var panel = buildTerminalPanel(session);
-    container.appendChild(panel);
+    container.appendChild(buildTerminalPanel(session));
   }
 
-  /**
-   * Called before renderCurrentMode clears the DOM.
-   * Stops polling but keeps terminal state for potential reuse.
-   */
   function beforeRender() {
     var ids = Object.keys(terminals);
     for (var i = 0; i < ids.length; i++) {
       var ts = terminals[ids[i]];
       stopPolling(ts);
-      // Detach from DOM but don't destroy term yet
-      if (ts._resizeObserver) {
-        ts._resizeObserver.disconnect();
-        ts._resizeObserver = null;
-      }
-      if (ts.term) {
-        ts.term.dispose();
-        ts.term = null;
-      }
+      if (ts._resizeObserver) { ts._resizeObserver.disconnect(); ts._resizeObserver = null; }
+      if (ts.term) { ts.term.dispose(); ts.term = null; }
     }
-    // Clear all terminal state since DOM will be wiped
     terminals = {};
   }
 
-  /**
-   * Notification of mode change.
-   */
   function onModeChange(fromMode, toMode) {
-    // Nothing special needed; beforeRender handles cleanup
+    // beforeRender handles cleanup
   }
 
-  /**
-   * Remove terminals for sessions that no longer exist.
-   */
   function cleanupStaleTerminals(currentSessions) {
     var activeIds = {};
-    for (var i = 0; i < currentSessions.length; i++) {
-      activeIds[currentSessions[i].session_id] = true;
-    }
+    for (var i = 0; i < currentSessions.length; i++) activeIds[currentSessions[i].session_id] = true;
     var ids = Object.keys(terminals);
     for (var j = 0; j < ids.length; j++) {
-      if (!activeIds[ids[j]]) {
-        destroyTerminal(ids[j]);
-      }
+      if (!activeIds[ids[j]]) destroyTerminal(ids[j]);
     }
   }
 

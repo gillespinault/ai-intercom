@@ -5,6 +5,8 @@ is currently displaying: permission prompts, questions, or idle text-input
 states.
 """
 
+import json
+
 import pytest
 
 from src.daemon.prompt_parser import parse_terminal_output
@@ -233,3 +235,111 @@ class TestEdgeCases:
         )
         result = parse_terminal_output(raw)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Notification data parser (non-tmux fallback)
+# ---------------------------------------------------------------------------
+
+
+class TestParseNotificationData:
+    """Tests for parse_notification_data() which parses Claude Code hook payloads."""
+
+    def test_permission_prompt(self):
+        from src.daemon.prompt_parser import parse_notification_data
+        raw = json.dumps({
+            "type": "permission_prompt",
+            "tool": "Bash",
+            "command": "npm test",
+            "message": "Claude wants to execute a Bash command",
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert result.type == PromptType.PERMISSION
+        assert result.tool == "Bash"
+        assert result.command_preview == "npm test"
+        assert len(result.choices) == 2
+
+    def test_permission_with_file_path(self):
+        from src.daemon.prompt_parser import parse_notification_data
+        raw = json.dumps({
+            "type": "permission_prompt",
+            "tool": "Edit",
+            "file_path": "src/main.py",
+            "message": "Claude wants to edit a file",
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert result.type == PromptType.PERMISSION
+        assert result.tool == "Edit"
+        assert result.command_preview == "src/main.py"
+
+    def test_question_notification(self):
+        from src.daemon.prompt_parser import parse_notification_data
+        raw = json.dumps({
+            "type": "question",
+            "question": "Which approach?",
+            "options": ["Option A", "Option B"],
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert result.type == PromptType.QUESTION
+        assert result.question == "Which approach?"
+        assert len(result.choices) == 2
+        assert result.choices[0].label == "Option A"
+
+    def test_question_with_dict_options(self):
+        from src.daemon.prompt_parser import parse_notification_data
+        raw = json.dumps({
+            "type": "ask_user",
+            "question": "Select one",
+            "options": [
+                {"label": "Create new"},
+                {"label": "Edit existing"},
+            ],
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert result.type == PromptType.QUESTION
+        assert result.choices[0].label == "Create new"
+
+    def test_generic_notification_with_message(self):
+        from src.daemon.prompt_parser import parse_notification_data
+        raw = json.dumps({
+            "type": "info",
+            "message": "Task completed successfully",
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert result.type == PromptType.TEXT_INPUT
+        assert "Task completed" in result.raw_text
+
+    def test_empty_input(self):
+        from src.daemon.prompt_parser import parse_notification_data
+        assert parse_notification_data("") is None
+        assert parse_notification_data(None) is None
+
+    def test_invalid_json(self):
+        from src.daemon.prompt_parser import parse_notification_data
+        assert parse_notification_data("{invalid json}") is None
+
+    def test_non_dict_json(self):
+        from src.daemon.prompt_parser import parse_notification_data
+        assert parse_notification_data('"just a string"') is None
+        assert parse_notification_data("[1, 2, 3]") is None
+
+    def test_empty_dict(self):
+        from src.daemon.prompt_parser import parse_notification_data
+        result = parse_notification_data("{}")
+        assert result is None
+
+    def test_long_command_preview_truncated(self):
+        from src.daemon.prompt_parser import parse_notification_data
+        raw = json.dumps({
+            "type": "permission_prompt",
+            "tool": "Bash",
+            "command": "x" * 300,
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert len(result.command_preview) <= 204  # 200 + "..."

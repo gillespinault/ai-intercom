@@ -793,4 +793,17 @@ def create_hub_api(
             return Response(content="Skill not found", status_code=404)
         return Response(content=skill_path.read_text(), media_type="text/markdown")
 
+    # --- Script distribution (for install.sh) ---
+
+    @app.get("/api/scripts/{name}")
+    async def get_script(name: str):
+        """Serve scripts to remote daemons (e.g. cc-heartbeat.sh)."""
+        # Sanitize: only allow simple filenames, no path traversal
+        if "/" in name or "\\" in name or ".." in name:
+            return Response(content="Invalid script name", status_code=400)
+        script_path = Path(__file__).parent.parent.parent / "scripts" / name
+        if not script_path.exists():
+            return Response(content=f"Script {name} not found", status_code=404)
+        return Response(content=script_path.read_text(), media_type="text/plain")
+
     return app

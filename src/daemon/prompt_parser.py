@@ -15,6 +15,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 import re
 
 from src.shared.models import DetectedPrompt, PromptChoice, PromptType
@@ -230,5 +231,105 @@ def parse_terminal_output(raw: str) -> DetectedPrompt | None:
     result = _try_text_input(text)
     if result is not None:
         return result
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Notification data parser (fallback for non-tmux sessions)
+# ---------------------------------------------------------------------------
+
+
+def parse_notification_data(raw_json: str) -> DetectedPrompt | None:
+    """Parse Claude Code hook Notification payload to extract prompt info.
+
+    The Notification hook provides JSON on stdin with fields like::
+
+        {
+            "session_id": "...",
+            "cwd": "...",
+            "type": "permission_prompt",
+            "tool": "Bash",
+            "command": "ls -la",
+            "message": "Claude wants to execute a Bash command",
+            ...
+        }
+
+    This is used as a fallback when tmux capture is not available.
+
+    Args:
+        raw_json: Raw JSON string from the hook's stdin payload.
+
+    Returns:
+        A ``DetectedPrompt`` if the notification contains prompt info,
+        or ``None`` if it cannot be parsed.
+    """
+    if not raw_json:
+        return None
+
+    try:
+        data = json.loads(raw_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    notification_type = data.get("type", "")
+
+    # Permission prompt from Notification hook
+    if notification_type == "permission_prompt":
+        tool = data.get("tool") or data.get("tool_name")
+        command_preview = (
+            data.get("command")
+            or data.get("file_path")
+            or data.get("arguments")
+            or data.get("description")
+        )
+        # Truncate long previews
+        if command_preview and len(command_preview) > 200:
+            command_preview = command_preview[:200] + "..."
+
+        choices = [
+            PromptChoice(key="y", label="yes"),
+            PromptChoice(key="n", label="no"),
+        ]
+
+        return DetectedPrompt(
+            type=PromptType.PERMISSION,
+            raw_text=data.get("message", "Permission requested"),
+            tool=tool,
+            command_preview=command_preview,
+            choices=choices,
+        )
+
+    # Question / ask_user type notifications
+    if notification_type in ("question", "ask_user", "user_question"):
+        question_text = data.get("question") or data.get("message", "")
+        options = data.get("options") or data.get("choices") or []
+        choices = []
+        for i, opt in enumerate(options):
+            if isinstance(opt, dict):
+                label = opt.get("label", opt.get("text", str(i + 1)))
+                choices.append(PromptChoice(key=str(i + 1), label=label))
+            elif isinstance(opt, str):
+                choices.append(PromptChoice(key=str(i + 1), label=opt))
+
+        return DetectedPrompt(
+            type=PromptType.QUESTION,
+            raw_text=question_text,
+            question=question_text,
+            choices=choices,
+            allows_free_text=bool(data.get("allows_free_text", True)),
+        )
+
+    # Generic notification — extract what we can
+    message = data.get("message", "")
+    if message:
+        return DetectedPrompt(
+            type=PromptType.TEXT_INPUT,
+            raw_text=message,
+            allows_free_text=True,
+        )
 
     return None

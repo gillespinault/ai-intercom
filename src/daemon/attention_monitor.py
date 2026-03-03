@@ -21,7 +21,7 @@ import os
 import subprocess
 from datetime import datetime, timezone
 
-from src.daemon.prompt_parser import parse_terminal_output
+from src.daemon.prompt_parser import parse_notification_data, parse_terminal_output
 from src.shared.models import (
     AttentionHeartbeat,
     AttentionSession,
@@ -184,12 +184,16 @@ class AttentionMonitor:
 
             state = self._determine_state(idle_seconds)
 
-            # If waiting and we have a tmux session, capture + parse.
+            # If waiting, try to capture prompt details.
+            # Priority: tmux terminal capture > notification_data fallback.
             prompt = None
-            if state == AttentionState.WAITING and hb.tmux_session:
-                raw_output = self._capture_terminal(hb.tmux_session)
-                if raw_output:
-                    prompt = parse_terminal_output(raw_output)
+            if state == AttentionState.WAITING:
+                if hb.tmux_session:
+                    raw_output = self._capture_terminal(hb.tmux_session)
+                    if raw_output:
+                        prompt = parse_terminal_output(raw_output)
+                if prompt is None and hb.notification_data:
+                    prompt = parse_notification_data(hb.notification_data)
 
             session = AttentionSession(
                 session_id=hb.session_id,

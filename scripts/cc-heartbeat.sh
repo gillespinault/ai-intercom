@@ -38,6 +38,8 @@ CC_PID=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
 PID="${CC_PID:-$PPID}"
 FILE="$DIR/${PID}.json"
 
+# Capture notification payload (truncated to 2000 chars) for non-tmux context
+NOTIFICATION_DATA=""
 case "$ACTION" in
     start|stop|working)
         TOOL_TIME=$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")
@@ -45,6 +47,18 @@ case "$ACTION" in
     waiting)
         # Set a timestamp far in the past so idle_seconds >> 15s → WAITING
         TOOL_TIME="2000-01-01T00:00:00+00:00"
+        # Capture the hook payload as notification context
+        NOTIFICATION_DATA=$(echo "$INPUT" | head -c 2000 | jq -Rs '.')
+        ;;
+    notification)
+        # Store notification context without changing last_tool_time.
+        # Read existing heartbeat to preserve last_tool_time.
+        if [ -f "$FILE" ]; then
+            TOOL_TIME=$(jq -r '.last_tool_time // empty' "$FILE" 2>/dev/null || echo "")
+        fi
+        [ -z "$TOOL_TIME" ] && TOOL_TIME=$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")
+        NOTIFICATION_DATA=$(echo "$INPUT" | head -c 2000 | jq -Rs '.')
+        ACTION="notification"
         ;;
     *)
         TOOL_TIME=$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")
@@ -53,6 +67,9 @@ esac
 
 # Write atomically via temp file
 TMPFILE="$(mktemp "$DIR/.heartbeat.XXXXXX")"
+# Default NOTIFICATION_DATA to empty JSON string if not set
+[ -z "$NOTIFICATION_DATA" ] && NOTIFICATION_DATA='""'
+
 cat > "$TMPFILE" << ENDJSON
 {
   "pid": $PID,
@@ -63,7 +80,8 @@ cat > "$TMPFILE" << ENDJSON
   "last_tool": "hook-$ACTION",
   "last_tool_time": "$TOOL_TIME",
   "tmux_session": "$TMUX_SESSION",
-  "rc_url": null
+  "rc_url": null,
+  "notification_data": $NOTIFICATION_DATA
 }
 ENDJSON
 

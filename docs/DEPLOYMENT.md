@@ -182,12 +182,26 @@ The MCP server auto-detects which project it's running in based on the working d
 
 The Attention Hub detects when Claude Code sessions are waiting for human input and notifies you via the PWA dashboard and Telegram. The pipeline is: **hooks -> heartbeat files -> AttentionMonitor -> Hub API -> PWA WebSocket + Telegram**.
 
-### Step 1: Install the heartbeat hook script
+### Step 1: Install via `install.sh` (Recommended)
 
-On each machine running Claude Code:
+The installer automatically sets up heartbeat hooks on each machine:
 
 ```bash
-# Copy the script to a location in PATH
+# On a machine that already has ai-intercom installed:
+./install.sh --hub-url http://<hub-ip>:7700
+```
+
+The installer will:
+1. Download `cc-heartbeat.sh` from the hub (`GET /api/scripts/cc-heartbeat.sh`)
+2. Configure Claude Code hooks in `~/.claude/settings.json`
+3. Create the sessions directory at `/tmp/cc-sessions/`
+
+### Step 1b: Manual install (Alternative)
+
+If you prefer manual setup, copy the script and configure hooks yourself:
+
+```bash
+# Copy the script
 sudo cp scripts/cc-heartbeat.sh /usr/local/bin/cc-heartbeat.sh
 sudo chmod +x /usr/local/bin/cc-heartbeat.sh
 ```
@@ -196,7 +210,7 @@ Dependencies: `jq` must be installed (`sudo apt install jq`).
 
 ### Step 2: Configure Claude Code hooks
 
-Add the following hooks to `~/.claude/settings.json`:
+If not using `install.sh`, add the following hooks to `~/.claude/settings.json`:
 
 ```json
 {
@@ -215,6 +229,9 @@ Add the following hooks to `~/.claude/settings.json`:
       {
         "matcher": "permission_prompt",
         "hooks": [{ "type": "command", "command": "cc-heartbeat.sh waiting" }]
+      },
+      {
+        "hooks": [{ "type": "command", "command": "cc-heartbeat.sh notification" }]
       }
     ],
     "UserPromptSubmit": [
@@ -227,6 +244,8 @@ Add the following hooks to `~/.claude/settings.json`:
 ```
 
 Each hook receives JSON on stdin from Claude Code (including `session_id` and `cwd`). The script writes a heartbeat file to `/tmp/cc-sessions/<pid>.json`.
+
+The second Notification hook (without matcher) captures all notification payloads in the `notification_data` field, enabling prompt detection for sessions running without tmux.
 
 ### Step 3: Verify the pipeline
 
@@ -259,6 +278,46 @@ Each hook receives JSON on stdin from Claude Code (including `session_id` and `c
 | `pwa/` | Hub (served) | Browser dashboard at `/attention` |
 
 > **Note:** Terminal viewing and prompt response require the Claude Code session to run inside tmux. Sessions not in tmux will still show state (WORKING/WAITING) but without terminal content.
+
+## HTTPS Access
+
+The Attention Hub dashboard should be exposed through the standard Traefik reverse proxy, **not** through `tailscale serve`.
+
+### Setup (Traefik + VPS Nginx)
+
+1. **Register the subdomain** on the VPS nginx API:
+   ```bash
+   curl -X POST "http://<vps-ip>:3004/add-subdomain" \
+     -H "Authorization: Bearer <token>" \
+     -H "Content-Type: application/json" \
+     -d '{"subdomain": "attention.robotsinlove.be", "target": "100.80.12.35:443", "protocol": "https"}'
+   ```
+
+2. **Add a DNS A record** pointing `attention.robotsinlove.be` to the VPS IP (`185.158.132.168`).
+
+3. **Create Traefik dynamic config** at `/etc/dokploy/traefik/dynamic/attention-hub.yml`:
+   ```yaml
+   http:
+     routers:
+       attention-router-websecure:
+         rule: Host(`attention.robotsinlove.be`)
+         service: attention-service
+         entryPoints:
+           - websecure
+         tls:
+           certResolver: letsencrypt
+     services:
+       attention-service:
+         loadBalancer:
+           servers:
+             - url: http://127.0.0.1:7700
+           passHostHeader: true
+   ```
+   Traefik auto-detects new files in its `dynamic/` directory (file provider).
+
+4. **Verify**: `curl -I https://attention.robotsinlove.be` should return HTTP 200.
+
+> **WARNING**: Never use `tailscale serve --bg <port>` without specifying `--https=<specific-port>`. The default maps port 443 and intercepts ALL HTTPS traffic on the Tailscale interface, which will take down every `*.robotsinlove.be` site behind Traefik.
 
 ## Project Discovery
 

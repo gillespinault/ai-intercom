@@ -423,6 +423,9 @@ async def run_hub(config: IntercomConfig) -> None:
         telegram_bot=bot, launcher=launcher, project_paths=project_paths,
     )
 
+    # Start attention store cleanup task
+    hub_api.state.attention_store.start_cleanup()
+
     # Run everything
     import uvicorn
 

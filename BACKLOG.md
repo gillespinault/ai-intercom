@@ -50,15 +50,15 @@ Les agents peuvent notifier l'humain via Telegram sans qu'il ait demande.
 - Notifications de fin de mission longue
 - Rapports periodiques automatiques
 
-### 7. ~~Dashboard web de l'annuaire~~ → PARTIELLEMENT FAIT (v0.4.0)
+### 7. ~~Dashboard web de l'annuaire~~ → PARTIELLEMENT FAIT (v0.5.0)
 ~~Interface web pour visualiser les machines, projets, statuts, missions en cours.~~
-PWA Attention Hub implementee (`/attention`) : vue temps-reel des sessions, terminal viewer, reponse aux prompts.
+PWA Attention Hub redesigned (v0.5.0) : Industrial Ops Console, machine grouping, sound alerts, event timeline, toast notifications, tmux-centric UX.
+~~Terminal viewer sans tmux~~ → FAIT (v0.5.0) : sessions non-tmux enrichies via `notification_data` du hook, affichent prompt info sans terminal view
+~~Hooks multi-machine~~ → FAIT (v0.5.0) : `install.sh` telecharge `cc-heartbeat.sh` depuis hub et configure les hooks automatiquement
 Reste a faire :
 - Historique des missions
 - Logs de communication
 - Vue annuaire machines/projets complete
-- Terminal viewer sans tmux : actuellement capture/injection requiert tmux (`capture-pane`, `send-keys`), les sessions non-tmux n'ont pas de terminal view ni de reponse aux prompts
-- Hooks multi-machine : `cc-heartbeat.sh` deploye uniquement sur serverlab, a installer sur limn/vps via `install.sh`
 
 ---
 
@@ -114,3 +114,10 @@ HMAC existe mais les tokens sont souvent vides.
 - [x] Bypass CLAUDECODE env var pour lancement agents (v0.4.0)
 - [x] Heartbeat hooks Claude Code : `cc-heartbeat.sh` via SessionStart/Stop/Notification/UserPromptSubmit ecrit dans `/tmp/cc-sessions/` (v0.4.0)
 - [x] Fix push_attention_event : format event wrapping pour match hub API (v0.4.0)
+- [x] PWA redesign Industrial Ops Console : machine grouping, sound alerts, timeline, toasts, tmux-centric UX (v0.5.0)
+- [x] Non-tmux session enrichment via `notification_data` hook payload + `parse_notification_data()` (v0.5.0)
+- [x] HTTPS via Traefik subdomain (`attention.robotsinlove.be`) au lieu de `tailscale serve` (v0.5.0)
+- [x] Hub script serving : `GET /api/scripts/{name}` pour distribution `cc-heartbeat.sh` (v0.5.0)
+- [x] Stale session cleanup : sessions >5min sans update supprimees automatiquement (v0.5.0)
+- [x] `install.sh` heartbeat hooks setup : telecharge script + configure hooks automatiquement (v0.5.0)
+- [x] `last_update` tracking sur `AttentionSession` pour detection staleness (v0.5.0)

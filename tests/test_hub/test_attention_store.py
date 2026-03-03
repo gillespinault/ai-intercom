@@ -395,3 +395,103 @@ class TestWaitingDebounce:
         })
         await asyncio.sleep(0)
         assert callback.call_count == 2
+
+
+class TestStaleSessionCleanup:
+    """Tests for automatic cleanup of stale sessions."""
+
+    @pytest.mark.asyncio
+    async def test_stale_session_removed(self):
+        """Sessions with last_update older than threshold are removed."""
+        from datetime import datetime, timedelta, timezone
+        from src.hub.attention_store import STALE_TIMEOUT_SECONDS
+
+        store = AttentionStore()
+
+        store.handle_event("laptop", {
+            "type": "new_session",
+            "session": _make_session(session_id="stale-1").model_dump(),
+        })
+        assert len(store.get_all_sessions()) == 1
+
+        # Simulate time passing by backdating last_update
+        old_time = (
+            datetime.now(timezone.utc) - timedelta(seconds=STALE_TIMEOUT_SECONDS + 60)
+        ).isoformat()
+        store._sessions["stale-1"].last_update = old_time
+
+        await store._cleanup_stale_sessions()
+        assert len(store.get_all_sessions()) == 0
+
+    @pytest.mark.asyncio
+    async def test_fresh_session_kept(self):
+        """Sessions with recent last_update are not removed."""
+        store = AttentionStore()
+
+        store.handle_event("laptop", {
+            "type": "new_session",
+            "session": _make_session(session_id="fresh-1").model_dump(),
+        })
+        assert len(store.get_all_sessions()) == 1
+
+        # last_update is set to now() by handle_event, so it should be fresh
+        await store._cleanup_stale_sessions()
+        assert len(store.get_all_sessions()) == 1
+
+    @pytest.mark.asyncio
+    async def test_mixed_stale_and_fresh(self):
+        """Only stale sessions are removed; fresh ones remain."""
+        from datetime import datetime, timedelta, timezone
+        from src.hub.attention_store import STALE_TIMEOUT_SECONDS
+
+        store = AttentionStore()
+
+        store.handle_event("laptop", {
+            "type": "new_session",
+            "session": _make_session(session_id="stale", pid=1111).model_dump(),
+        })
+        store.handle_event("laptop", {
+            "type": "new_session",
+            "session": _make_session(session_id="fresh", pid=2222).model_dump(),
+        })
+        assert len(store.get_all_sessions()) == 2
+
+        # Backdate only the stale session
+        old_time = (
+            datetime.now(timezone.utc) - timedelta(seconds=STALE_TIMEOUT_SECONDS + 60)
+        ).isoformat()
+        store._sessions["stale"].last_update = old_time
+
+        await store._cleanup_stale_sessions()
+        assert len(store.get_all_sessions()) == 1
+        assert store.get_session("fresh") is not None
+        assert store.get_session("stale") is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_clears_waiting_debounce(self):
+        """Stale session cleanup also clears the waiting notification debounce."""
+        from datetime import datetime, timedelta, timezone
+        from src.hub.attention_store import STALE_TIMEOUT_SECONDS
+
+        store = AttentionStore()
+        callback = AsyncMock()
+        store.set_on_waiting_callback(callback)
+
+        store.handle_event("laptop", {
+            "type": "new_session",
+            "session": _make_session(
+                session_id="stale-wait", state=AttentionState.WAITING
+            ).model_dump(),
+        })
+        await asyncio.sleep(0)
+        assert callback.call_count == 1
+        assert "stale-wait" in store._notified_waiting
+
+        # Backdate the session
+        old_time = (
+            datetime.now(timezone.utc) - timedelta(seconds=STALE_TIMEOUT_SECONDS + 60)
+        ).isoformat()
+        store._sessions["stale-wait"].last_update = old_time
+
+        await store._cleanup_stale_sessions()
+        assert "stale-wait" not in store._notified_waiting

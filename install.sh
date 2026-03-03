@@ -194,6 +194,54 @@ else
     echo "Start manually: ai-intercom daemon --config $CONFIG_DIR/config.yml"
 fi
 
+# --- Install heartbeat hooks for Attention Hub ---
+echo ""
+echo "=== Installing Attention Hub heartbeat hooks ==="
+HEARTBEAT_DIR="${HOME}/.config/ai-intercom"
+HEARTBEAT_SCRIPT="${HEARTBEAT_DIR}/cc-heartbeat.sh"
+
+# Download heartbeat script from hub
+HEARTBEAT_CONTENT=$(curl -sf "$HUB_URL/api/scripts/cc-heartbeat.sh" 2>/dev/null || true)
+if [ -n "$HEARTBEAT_CONTENT" ]; then
+    echo "$HEARTBEAT_CONTENT" > "$HEARTBEAT_SCRIPT"
+    chmod +x "$HEARTBEAT_SCRIPT"
+    echo "Heartbeat script installed at $HEARTBEAT_SCRIPT"
+else
+    echo "Could not download heartbeat script from hub. Skipping."
+fi
+
+# Configure heartbeat hooks in settings.json
+CLAUDE_SETTINGS="${HOME}/.claude/settings.json"
+if [ -f "$CLAUDE_SETTINGS" ] && [ -f "$HEARTBEAT_SCRIPT" ]; then
+    if ! grep -q "cc-heartbeat" "$CLAUDE_SETTINGS" 2>/dev/null; then
+        echo "Adding heartbeat hooks to $CLAUDE_SETTINGS"
+        python3 -c "
+import json
+with open('$CLAUDE_SETTINGS') as f:
+    settings = json.load(f)
+hooks = settings.setdefault('hooks', {})
+hb = '$HEARTBEAT_SCRIPT'
+hooks['SessionStart'] = [{'hooks': [{'type': 'command', 'command': 'bash ' + hb + ' start'}]}]
+hooks['Stop'] = [{'hooks': [{'type': 'command', 'command': 'bash ' + hb + ' stop'}]}]
+hooks.setdefault('Notification', [])
+if not any('waiting' in str(h) for h in hooks['Notification']):
+    hooks['Notification'].insert(0, {'matcher': 'permission_prompt', 'hooks': [{'type': 'command', 'command': 'bash ' + hb + ' waiting'}]})
+if not any('notification' in str(h) for h in hooks['Notification']):
+    hooks['Notification'].append({'hooks': [{'type': 'command', 'command': 'bash ' + hb + ' notification'}]})
+hooks['UserPromptSubmit'] = [{'hooks': [{'type': 'command', 'command': 'bash ' + hb + ' working'}]}]
+with open('$CLAUDE_SETTINGS', 'w') as f:
+    json.dump(settings, f, indent=2)
+print('Heartbeat hooks installed.')
+" 2>/dev/null || echo "Could not auto-configure heartbeat hooks."
+    else
+        echo "Heartbeat hooks already configured."
+    fi
+fi
+
+# Create sessions directory
+mkdir -p /tmp/cc-sessions
+echo "Sessions directory: /tmp/cc-sessions"
+
 # --- Install /intercom skill for Claude Code ---
 echo ""
 echo "=== Installing /intercom skill ==="

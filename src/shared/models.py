@@ -153,6 +153,7 @@ class AttentionHeartbeat(BaseModel):
     last_tool_time: str = ""
     tmux_session: str = ""
     rc_url: str | None = None
+    notification_data: str = ""
 
 
 class AttentionSession(BaseModel):
@@ -166,6 +167,7 @@ class AttentionSession(BaseModel):
     state_since: str = ""
     last_tool: str = ""
     last_tool_time: str = ""
+    last_update: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     rc_url: str | None = None
     idle_seconds: int = 0
     prompt: DetectedPrompt | None = None
