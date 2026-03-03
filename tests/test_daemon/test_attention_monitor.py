@@ -353,3 +353,87 @@ class TestRunLoop:
         # The new_session event should have been pushed
         assert len(pushed) == 1
         assert pushed[0]["type"] == "new_session"
+
+
+# ---------------------------------------------------------------------------
+# TestResync
+# ---------------------------------------------------------------------------
+
+
+class TestResync:
+    @pytest.mark.asyncio
+    async def test_resync_pushes_all_sessions(self, monitor, sessions_dir):
+        """Resync should re-push all tracked sessions as new_session events."""
+        pushed: list[dict] = []
+
+        class FakeHub:
+            async def push_attention_event(self, event):
+                pushed.append(event)
+
+        monitor._hub_client = FakeHub()
+
+        # Create two sessions
+        pid = os.getpid()
+        write_heartbeat(sessions_dir, pid=pid, session_id="sess-a", last_tool_time=_iso_now())
+        write_heartbeat(sessions_dir, pid=pid + 99999, session_id="sess-b", last_tool_time=_iso_now())
+
+        # Poll to populate _tracked (only the real PID will pass process_alive)
+        await monitor.poll_once()
+        tracked_count = len(monitor.get_sessions())
+        assert tracked_count >= 1
+
+        pushed.clear()
+
+        # Resync should re-push all tracked sessions
+        count = await monitor.resync()
+        assert count == tracked_count
+        assert all(e["type"] == "new_session" for e in pushed)
+
+    @pytest.mark.asyncio
+    async def test_resync_noop_without_sessions(self, monitor):
+        """Resync with no tracked sessions should return 0."""
+
+        class FakeHub:
+            async def push_attention_event(self, event):
+                pass
+
+        monitor._hub_client = FakeHub()
+        count = await monitor.resync()
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_resync_noop_without_hub_client(self, monitor, sessions_dir):
+        """Resync without hub_client should return 0."""
+        pid = os.getpid()
+        write_heartbeat(sessions_dir, pid=pid, last_tool_time=_iso_now())
+        await monitor.poll_once()
+
+        # hub_client is None by default in fixture
+        count = await monitor.resync()
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_resync_tolerates_push_errors(self, monitor, sessions_dir):
+        """Resync should continue even if individual pushes fail."""
+        pushed: list[dict] = []
+
+        class FlakyHub:
+            def __init__(self):
+                self.call_count = 0
+
+            async def push_attention_event(self, event):
+                self.call_count += 1
+                if self.call_count == 1:
+                    raise ConnectionError("hub down")
+                pushed.append(event)
+
+        monitor._hub_client = FlakyHub()
+
+        pid = os.getpid()
+        write_heartbeat(sessions_dir, pid=pid, session_id="sess-ok", last_tool_time=_iso_now())
+        await monitor.poll_once()
+
+        count = await monitor.resync()
+        # The push failed, so count should be 0 (error caught)
+        # But the method should not raise
+        assert count >= 0

@@ -52,6 +52,20 @@ async def test_heartbeat(client, registry):
     headers = sign_request(body, "vps", "tok")
     resp = await client.post("/api/heartbeat", content=body, headers=headers)
     assert resp.status_code == 200
+    data = resp.json()
+    assert "hub_epoch" in data
+    assert data["hub_epoch"]  # non-empty string
+
+
+async def test_heartbeat_epoch_stable(client, registry):
+    """Hub epoch should remain the same across heartbeats (no restart)."""
+    await registry.register_machine("vps", "VPS", "1.2.3.4", "http://1.2.3.4:7700", "tok")
+    body = b'{"machine_id": "vps"}'
+    headers = sign_request(body, "vps", "tok")
+
+    resp1 = await client.post("/api/heartbeat", content=body, headers=headers)
+    resp2 = await client.post("/api/heartbeat", content=body, headers=headers)
+    assert resp1.json()["hub_epoch"] == resp2.json()["hub_epoch"]
 
 
 async def test_heartbeat_with_version(client, registry):

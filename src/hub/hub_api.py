@@ -47,6 +47,7 @@ def create_hub_api(
 
     attention_store = AttentionStore()
     app.state.attention_store = attention_store
+    app.state.hub_epoch = datetime.now(timezone.utc).isoformat()
     app.include_router(create_attention_router(attention_store, registry))
     app.include_router(create_pwa_router())
 
@@ -277,7 +278,7 @@ def create_hub_api(
                     token=existing.get("token", ""),
                 )
 
-        return {"status": "ok"}
+        return {"status": "ok", "hub_epoch": app.state.hub_epoch}
 
     # --- Message routing ---
 

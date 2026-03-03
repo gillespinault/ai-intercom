@@ -290,3 +290,25 @@ class AttentionMonitor:
     def get_sessions(self) -> list[AttentionSession]:
         """Return a snapshot of all currently tracked sessions."""
         return list(self._tracked.values())
+
+    async def resync(self) -> int:
+        """Re-push all tracked sessions as ``new_session`` events.
+
+        Called when the hub restarts (detected via epoch change) so that
+        the hub's in-memory AttentionStore is repopulated.
+
+        Returns the number of sessions pushed.
+        """
+        if not self._hub_client or not self._tracked:
+            return 0
+
+        pushed = 0
+        for session in list(self._tracked.values()):
+            try:
+                await self._hub_client.push_attention_event(  # type: ignore[union-attr]
+                    {"type": "new_session", "session": session}
+                )
+                pushed += 1
+            except Exception as exc:
+                logger.warning("Resync push failed for %s: %s", session.session_id, exc)
+        return pushed

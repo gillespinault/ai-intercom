@@ -13,6 +13,7 @@ from src.shared.config import IntercomConfig
 logger = logging.getLogger(__name__)
 
 _daemon_app = None
+_last_hub_epoch: str | None = None
 
 
 def _detect_tailscale_ip(config_override: str = "") -> str:
@@ -212,6 +213,8 @@ async def _heartbeat_loop(hub_url: str, machine_id: str, token: str, daemon_port
     import json
     from src.shared.auth import sign_request
 
+    global _last_hub_epoch
+
     while True:
         await asyncio.sleep(30)
         try:
@@ -239,6 +242,22 @@ async def _heartbeat_loop(hub_url: str, machine_id: str, token: str, daemon_port
             headers = sign_request(body, machine_id, token)
             headers["Content-Type"] = "application/json"
             async with httpx.AsyncClient(timeout=5) as client:
-                await client.post(f"{hub_url}/api/heartbeat", content=body, headers=headers)
+                resp = await client.post(f"{hub_url}/api/heartbeat", content=body, headers=headers)
+
+            # Detect hub restart via epoch change
+            hub_epoch = resp.json().get("hub_epoch")
+            if hub_epoch and _last_hub_epoch is not None and hub_epoch != _last_hub_epoch:
+                logger.info("Hub epoch changed (%s -> %s), resyncing attention sessions", _last_hub_epoch, hub_epoch)
+                await _resync_attention_sessions()
+            if hub_epoch:
+                _last_hub_epoch = hub_epoch
         except Exception:
             pass
+
+
+async def _resync_attention_sessions() -> None:
+    """Ask the AttentionMonitor to re-push all tracked sessions to the hub."""
+    if _daemon_app and hasattr(_daemon_app.state, "attention_monitor"):
+        monitor = _daemon_app.state.attention_monitor
+        count = await monitor.resync()
+        logger.info("Resynced %d attention sessions to hub", count)
