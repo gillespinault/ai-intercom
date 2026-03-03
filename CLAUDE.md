@@ -75,6 +75,12 @@ Claude Code hooks (SessionStart/Stop/Notification/UserPromptSubmit)
 - Special case: `~/.claude/skills/<name>/` → `skill:<name>`
 - Actions: start, stop, working, waiting, notification
 
+**Abandon threshold** (`attention_monitor.py`):
+- Sessions idle > `_ABANDON_THRESHOLD` (1 hour) are considered abandoned
+- Daemon stops pushing updates → hub's `STALE_TIMEOUT` (5 min) cleans them up
+- Non-destructive: if the user returns and types, the session reappears automatically
+- Prevents ghost sessions from forgotten tmux windows cluttering the dashboard
+
 **PWA Control Room** (`pwa/`):
 - Tile grid layout with session cards showing state/prompt/actions
 - Session disambiguation via tmux naming convention (`cc-<project>-<N>` → `#N` suffix)

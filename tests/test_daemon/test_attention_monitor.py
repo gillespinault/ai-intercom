@@ -626,6 +626,72 @@ class TestPromptChanged:
         assert not AttentionMonitor._prompt_changed(a, b)
 
 
+class TestAbandonThreshold:
+    """Sessions idle longer than _ABANDON_THRESHOLD are dropped."""
+
+    @pytest.mark.asyncio
+    async def test_abandoned_session_sends_ended(self, monitor, sessions_dir):
+        """A session idle > ABANDON_THRESHOLD should emit session_ended."""
+        from src.daemon.attention_monitor import _ABANDON_THRESHOLD
+
+        pid = os.getpid()
+        sid = f"sess-{pid}"
+        # First poll: register the session (recent)
+        write_heartbeat(sessions_dir, pid=pid, last_tool_time=_iso_past(60))
+        events1 = await monitor.poll_once()
+        assert len(events1) == 1
+        assert events1[0]["type"] == "new_session"
+        assert sid in {s.session_id for s in monitor.get_sessions()}
+
+        # Second poll: make it abandoned (idle > threshold)
+        write_heartbeat(
+            sessions_dir, pid=pid,
+            last_tool_time=_iso_past(_ABANDON_THRESHOLD + 100),
+        )
+        events2 = await monitor.poll_once()
+        assert len(events2) == 1
+        assert events2[0]["type"] == "session_ended"
+        assert events2[0]["session"].state == AttentionState.ENDED
+        # Should no longer be tracked
+        assert sid not in {s.session_id for s in monitor.get_sessions()}
+
+    @pytest.mark.asyncio
+    async def test_abandoned_session_not_reported(self, monitor, sessions_dir):
+        """A freshly discovered abandoned session should be ignored entirely."""
+        from src.daemon.attention_monitor import _ABANDON_THRESHOLD
+
+        pid = os.getpid()
+        # Heartbeat is already old — never registered before
+        write_heartbeat(
+            sessions_dir, pid=pid,
+            last_tool_time=_iso_past(_ABANDON_THRESHOLD + 500),
+        )
+        events = await monitor.poll_once()
+        # Not tracked, so no ended event either — just skipped
+        assert len(events) == 0
+        assert len(monitor.get_sessions()) == 0
+
+    @pytest.mark.asyncio
+    async def test_session_reappears_after_activity(self, monitor, sessions_dir):
+        """If user returns to an abandoned session, it reappears."""
+        from src.daemon.attention_monitor import _ABANDON_THRESHOLD
+
+        pid = os.getpid()
+        # Start abandoned
+        write_heartbeat(
+            sessions_dir, pid=pid,
+            last_tool_time=_iso_past(_ABANDON_THRESHOLD + 100),
+        )
+        events1 = await monitor.poll_once()
+        assert len(events1) == 0
+
+        # User returns — recent activity
+        write_heartbeat(sessions_dir, pid=pid, last_tool_time=_iso_past(30))
+        events2 = await monitor.poll_once()
+        assert len(events2) == 1
+        assert events2[0]["type"] == "new_session"
+
+
 class TestResync:
     @pytest.mark.asyncio
     async def test_resync_pushes_all_sessions(self, monitor, sessions_dir):

@@ -38,6 +38,12 @@ _THINKING_THRESHOLD = 5.0
 # Must be well under STALE_TIMEOUT_SECONDS (300s) on the hub side.
 _KEEPALIVE_INTERVAL = 120
 
+# Sessions idle longer than this are considered abandoned and will no longer
+# be pushed to the hub.  The hub's own STALE_TIMEOUT (300s) will then clean
+# them up automatically.  If the user returns and types something, idle_seconds
+# drops back below this threshold and the session reappears.
+_ABANDON_THRESHOLD = 3600  # 1 hour
+
 
 class AttentionMonitor:
     """Monitors Claude Code sessions via heartbeat files.
@@ -257,6 +263,22 @@ class AttentionMonitor:
                     idle_seconds = max(0.0, (now - last_tool_dt).total_seconds())
                 except ValueError:
                     pass
+
+            # Skip abandoned sessions — idle too long, likely a forgotten
+            # tmux.  Stop pushing so the hub expires it after 5 min.
+            if idle_seconds >= _ABANDON_THRESHOLD:
+                if hb.session_id in self._tracked:
+                    logger.info(
+                        "Session %s (%s) abandoned (idle %.0fs), stopping updates",
+                        hb.session_id[:8], hb.project, idle_seconds,
+                    )
+                    ended = self._tracked.pop(hb.session_id)
+                    self._last_prompt.pop(hb.session_id, None)
+                    self._last_push.pop(hb.session_id, None)
+                    ended.state = AttentionState.ENDED
+                    ended.state_since = now.isoformat()
+                    events.append({"type": "session_ended", "session": ended})
+                continue
 
             state = self._determine_state(idle_seconds)
 
