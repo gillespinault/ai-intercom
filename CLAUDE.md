@@ -49,6 +49,39 @@ Other key files:
 - `scripts/cc-heartbeat.sh` - Claude Code hook script writing heartbeats to `/tmp/cc-sessions/`
 - `pwa/` - Attention Hub Progressive Web App (served at `/attention`)
 
+## Attention Pipeline Details
+
+The attention system detects when Claude Code sessions need human input:
+
+```
+Claude Code hooks (SessionStart/Stop/Notification/UserPromptSubmit)
+  → cc-heartbeat.sh writes JSON to /tmp/cc-sessions/<PID>.json
+    → AttentionMonitor polls heartbeat files every 3s
+      → Captures tmux terminal via `tmux capture-pane`
+        → prompt_parser.py detects prompt type (permission/question/text_input)
+          → Pushes AttentionSession to Hub API
+            → Hub broadcasts via WebSocket to PWA + Telegram notifications
+```
+
+**Prompt parser architecture** (`src/daemon/prompt_parser.py`):
+- Priority cascade: permission → select_input → question → text_input
+- SelectInput detection limited to bottom 30 lines (avoids scroll buffer history)
+- Contiguous block extraction ensures only adjacent numbered options are collected
+- Handles `\xa0` non-breaking spaces and ccusage statusline decorators
+- `_prompt_changed()` compares question, command_preview, AND choices to detect updates
+
+**Heartbeat script** (`scripts/cc-heartbeat.sh`):
+- `detect_project()` walks up from CWD to find CLAUDE.md or .git
+- Special case: `~/.claude/skills/<name>/` → `skill:<name>`
+- Actions: start, stop, working, waiting, notification
+
+**PWA Control Room** (`pwa/`):
+- Tile grid layout with session cards showing state/prompt/actions
+- Session disambiguation via tmux naming convention (`cc-<project>-<N>` → `#N` suffix)
+- SKILL/SUB badges for background sessions (dimmed opacity)
+- Dismiss button to hide resolved tiles
+- WebSocket real-time updates from hub
+
 ## Commands
 
 ```bash
@@ -80,4 +113,18 @@ If you are launched by the intercom system to handle a support request or feedba
 - Python 3.12, uses `uv` for dependency management
 - FastAPI for HTTP APIs, python-telegram-bot for Telegram
 - MCP SDK (`mcp[cli]`) for MCP server
-- Tests: `pytest` from project root
+- Tests: `pytest` from project root (129 tests for daemon/hub/parser)
+
+### After code changes
+
+The daemon runs separately from the hub — both need updating:
+
+```bash
+# Rebuild hub (Docker)
+docker compose -f docker-compose.hub.yml build --no-cache
+docker compose -f docker-compose.hub.yml up -d
+
+# Reinstall daemon (systemd, editable install from source)
+/home/gilles/.local/share/ai-intercom-daemon/venv/bin/pip install -e .
+sudo systemctl restart ai-intercom-daemon
+```
