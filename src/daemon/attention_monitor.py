@@ -112,10 +112,15 @@ class AttentionMonitor:
 
     @staticmethod
     def _capture_terminal(tmux_session: str) -> str | None:
-        """Capture the last 30 lines of a tmux pane."""
+        """Capture the last 30 lines of a tmux pane.
+
+        Uses ``-S -30`` (start line relative to cursor) which is
+        compatible with tmux 3.x. The older ``-l`` flag is not
+        supported in all versions.
+        """
         try:
             result = subprocess.run(
-                ["tmux", "capture-pane", "-t", tmux_session, "-p", "-l", "30"],
+                ["tmux", "capture-pane", "-t", tmux_session, "-p", "-S", "-30"],
                 capture_output=True,
                 text=True,
                 timeout=5,

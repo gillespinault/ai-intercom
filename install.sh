@@ -340,6 +340,42 @@ else
     echo "No settings.local.json found. Hooks will need manual configuration."
 fi
 
+# --- Install claude-tmux wrapper for Attention Hub ---
+echo ""
+echo "=== Installing claude-tmux wrapper ==="
+CLAUDE_TMUX_SCRIPT="${HOME}/.local/bin/claude-tmux"
+mkdir -p "${HOME}/.local/bin"
+
+# Download from hub or use local copy
+CLAUDE_TMUX_CONTENT=$(curl -sf "$HUB_URL/api/scripts/claude-tmux.sh" 2>/dev/null || true)
+if [ -n "$CLAUDE_TMUX_CONTENT" ]; then
+    echo "$CLAUDE_TMUX_CONTENT" > "$CLAUDE_TMUX_SCRIPT"
+    chmod +x "$CLAUDE_TMUX_SCRIPT"
+    echo "claude-tmux installed at $CLAUDE_TMUX_SCRIPT"
+else
+    echo "Could not download claude-tmux from hub. Skipping."
+fi
+
+# Add shell function to .bashrc if not already present
+SHELL_RC=""
+if [ -f "$HOME/.zshrc" ]; then
+    SHELL_RC="$HOME/.zshrc"
+elif [ -f "$HOME/.bashrc" ]; then
+    SHELL_RC="$HOME/.bashrc"
+fi
+
+if [ -n "$SHELL_RC" ] && [ -f "$CLAUDE_TMUX_SCRIPT" ]; then
+    if ! grep -q "claude-tmux" "$SHELL_RC" 2>/dev/null; then
+        echo "" >> "$SHELL_RC"
+        echo "# AI-Intercom: auto-wrap claude in tmux for Attention Hub support" >> "$SHELL_RC"
+        echo "alias claude='claude-tmux'" >> "$SHELL_RC"
+        echo "Shell alias added to $SHELL_RC (claude -> claude-tmux)"
+        echo "Run 'source $SHELL_RC' or start a new terminal to activate."
+    else
+        echo "claude-tmux alias already configured in $SHELL_RC"
+    fi
+fi
+
 # --- Save install metadata for self-upgrade ---
 echo ""
 echo "=== Saving install metadata ==="

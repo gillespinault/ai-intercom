@@ -68,6 +68,31 @@ class TestPermissionDetection:
         assert result.tool is not None
         assert "mcp__outline__search_documents" in result.tool
 
+    def test_claude_needs_permission_format(self):
+        """Claude Code 2.x uses 'needs your permission to use' wording."""
+        raw = (
+            "  Claude needs your permission to use Bash\n"
+            "  Command: git status\n"
+            "  Allow? (y)es / (n)o / (a)lways allow for this session"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.PERMISSION
+        assert result.tool == "Bash"
+        assert "git status" in (result.command_preview or "")
+
+    def test_claude_needs_permission_mcp_tool(self):
+        """Claude Code 2.x permission for MCP tools."""
+        raw = (
+            "  Claude needs your permission to use mcp__outline__search_documents\n"
+            "  Arguments: {\"query\": \"test\"}\n"
+            "  Allow? (y)es / (n)o / (a)lways allow for this session"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.PERMISSION
+        assert result.tool == "mcp__outline__search_documents"
+
     def test_permission_with_multiline_command(self):
         raw = (
             "  Claude wants to execute a Bash command\n"
@@ -163,6 +188,45 @@ class TestIdleDetection:
 
     def test_bare_prompt(self):
         raw = "> "
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.TEXT_INPUT
+
+    def test_unicode_prompt(self):
+        """Claude Code 2.x uses ❯ as the input prompt."""
+        raw = (
+            "  I've completed the task.\n"
+            "\u276f \n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.TEXT_INPUT
+        assert result.allows_free_text is True
+
+    def test_unicode_prompt_with_decorators(self):
+        """Real Claude Code terminal: prompt + separator + hint."""
+        raw = (
+            "  Some output text\n"
+            "\n"
+            "\u276f \n"
+            "\u2500" * 80 + "\n"
+            "  esc to interrupt\n"
+        )
+        result = parse_terminal_output(raw)
+        assert result is not None
+        assert result.type == PromptType.TEXT_INPUT
+
+    def test_unicode_prompt_with_tip(self):
+        """Real Claude Code terminal: prompt + separator + tip."""
+        raw = (
+            "  Some output text\n"
+            "\n"
+            "\u276f \n"
+            "\u2500" * 80 + "\n"
+            "  Tip: Connect Claude to your IDE \u00b7 /ide\n"
+            "\u2500" * 80 + "\n"
+            "  esc to interrupt\n"
+        )
         result = parse_terminal_output(raw)
         assert result is not None
         assert result.type == PromptType.TEXT_INPUT
@@ -343,3 +407,99 @@ class TestParseNotificationData:
         result = parse_notification_data(raw)
         assert result is not None
         assert len(result.command_preview) <= 204  # 200 + "..."
+
+
+# ---------------------------------------------------------------------------
+# Real Claude Code payloads (notification_type field)
+# ---------------------------------------------------------------------------
+
+
+class TestRealClaudeCodePayloads:
+    """Tests using actual Claude Code hook payloads observed in production."""
+
+    def test_idle_prompt(self):
+        """Real payload from Claude Code idle_prompt notification."""
+        from src.daemon.prompt_parser import parse_notification_data
+        raw = json.dumps({
+            "session_id": "5035a499-a915-46f2-9323-be0521db3ab4",
+            "transcript_path": "/home/gilles/.claude/projects/mnemos/5035a499.jsonl",
+            "cwd": "/home/gilles/serverlab/projects/mnemos",
+            "hook_event_name": "Notification",
+            "message": "Claude is waiting for your input",
+            "notification_type": "idle_prompt",
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert result.type == PromptType.TEXT_INPUT
+        assert "waiting for your input" in result.raw_text
+        assert result.allows_free_text is True
+
+    def test_permission_prompt_notification_type(self):
+        """Permission prompt using notification_type (real Claude Code field)."""
+        from src.daemon.prompt_parser import parse_notification_data
+        raw = json.dumps({
+            "session_id": "abc123",
+            "cwd": "/home/gilles/project",
+            "hook_event_name": "Notification",
+            "notification_type": "permission_prompt",
+            "tool_name": "Bash",
+            "command": "docker ps",
+            "message": "Claude wants to execute a Bash command",
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert result.type == PromptType.PERMISSION
+        assert result.tool == "Bash"
+        assert result.command_preview == "docker ps"
+
+    def test_permission_prompt_tool_name_preferred(self):
+        """tool_name (Claude Code) takes precedence over tool (legacy)."""
+        from src.daemon.prompt_parser import parse_notification_data
+        raw = json.dumps({
+            "notification_type": "permission_prompt",
+            "tool_name": "Edit",
+            "tool": "OldToolName",
+            "file_path": "src/main.py",
+            "message": "Claude wants to edit a file",
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert result.tool == "Edit"
+
+    def test_permission_prompt_tool_input_dict(self):
+        """Tool details nested inside tool_input dict."""
+        from src.daemon.prompt_parser import parse_notification_data
+        raw = json.dumps({
+            "notification_type": "permission_prompt",
+            "tool_name": "Bash",
+            "tool_input": {"command": "npm install"},
+            "message": "Claude wants to execute a Bash command",
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert result.tool == "Bash"
+        assert result.command_preview == "npm install"
+
+    def test_notification_type_takes_precedence(self):
+        """notification_type is preferred over type when both present."""
+        from src.daemon.prompt_parser import parse_notification_data
+        raw = json.dumps({
+            "notification_type": "idle_prompt",
+            "type": "permission_prompt",
+            "message": "Claude is waiting for your input",
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert result.type == PromptType.TEXT_INPUT  # idle_prompt, not permission
+
+    def test_legacy_type_still_works(self):
+        """Legacy 'type' field still works when notification_type absent."""
+        from src.daemon.prompt_parser import parse_notification_data
+        raw = json.dumps({
+            "type": "permission_prompt",
+            "tool": "Bash",
+            "command": "ls",
+        })
+        result = parse_notification_data(raw)
+        assert result is not None
+        assert result.type == PromptType.PERMISSION

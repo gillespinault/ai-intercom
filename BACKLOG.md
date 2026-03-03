@@ -29,6 +29,20 @@ Actuellement chaque message Telegram est independant (pas de memoire de conversa
 - Passer le contexte des echanges precedents au dispatcher
 - Permettre des conversations multi-tours ("fais X" → "maintenant fais Y sur le meme serveur")
 
+### Known Bugs (discovered v0.5.0 testing)
+
+#### B1. Hub/daemon sync perdue au restart du hub
+Quand le hub redémarre après le daemon, toutes les sessions sont perdues. Le daemon a déjà poussé ses événements initiaux et ne les re-pousse pas car il pense que le hub les connaît. Workaround : redémarrer le daemon après le hub.
+- Fix possible : le daemon re-pousse un snapshot complet au prochain heartbeat si le hub répond avec un état vide ou un flag "just_restarted"
+
+#### B2. notification_data vidée sur hook-working
+Quand `UserPromptSubmit` fire, `cc-heartbeat.sh working` remet `notification_data` à vide. Si le daemon poll pendant WAITING mais que le dernier hook était `working`, le prompt info est perdu. Race condition entre le hook qui écrit et le monitor qui lit.
+- Fix possible : ne pas effacer `notification_data` dans le cas `working`, ou le daemon garde le dernier prompt connu en cache
+
+#### B3. Tmux requis pour interaction PWA complète
+Sans tmux, les sessions sont en mode "monitor only" (on détecte l'état mais on ne peut pas répondre depuis la PWA). Nécessite un wrapper tmux transparent.
+- Voir section "Tmux transparency" ci-dessous pour les solutions envisagées
+
 ---
 
 ## Moyenne priorite

@@ -40,11 +40,13 @@ def _strip_ansi(text: str) -> str:
 #   "Claude wants to edit a file"
 #   "Claude wants to write to a file"
 #   "Claude wants to use the mcp__outline__search_documents tool"
+#   "Claude needs your permission to use Bash"  (Claude Code 2.x)
 _PERMISSION_RE = re.compile(
-    r"Claude\s+wants\s+to\s+(?:execute\s+a\s+(\w+)\s+command"
+    r"Claude\s+(?:wants\s+to|needs\s+your\s+permission\s+to)"
+    r"\s+(?:execute\s+a\s+(\w+)\s+command"
     r"|edit\s+a\s+file"
     r"|write\s+to\s+a\s+file"
-    r"|use\s+the\s+([\w.]+)\s+tool)",
+    r"|use\s+(?:the\s+)?([\w.]+)(?:\s+tool)?)",
     re.IGNORECASE,
 )
 
@@ -138,8 +140,8 @@ def _try_permission(text: str) -> DetectedPrompt | None:
 # Matches numbered option lines: "1. Option A", "  2. Option B"
 _NUMBERED_OPTION_RE = re.compile(r"^\s*(\d+)\.\s+(.+)$", re.MULTILINE)
 
-# The input prompt indicator at the end of the output.
-_INPUT_PROMPT_RE = re.compile(r">\s*$")
+# The input prompt indicator at the end of the output (> or ❯).
+_INPUT_PROMPT_RE = re.compile(r"[>\u276f]\s*$")
 
 
 def _try_question(text: str) -> DetectedPrompt | None:
@@ -182,21 +184,47 @@ def _try_question(text: str) -> DetectedPrompt | None:
 
 
 def _try_text_input(text: str) -> DetectedPrompt | None:
-    # Must end with a ">" prompt on its own (possibly with trailing space).
-    # The ">" must be at the start of a line or be the entire content.
+    # Detect the Claude Code idle input prompt.
+    # The terminal typically ends with:
+    #   ❯                       (or >)
+    #   ──────────────────────  (separator line)
+    #   esc to interrupt        (hint)
+    #
+    # We scan from the bottom, skipping decorator lines (separators,
+    # hints, blank lines), looking for a prompt character.
     lines = text.rstrip().splitlines()
     if not lines:
         return None
 
-    last_line = lines[-1].strip()
-    if last_line != ">":
+    # Decorator patterns to skip when scanning from the bottom.
+    _DECORATOR_RE = re.compile(
+        r"^[\s─━═\-─]*$"          # separator lines (box-drawing chars)
+        r"|^\s*esc\s+to\s+"       # "esc to interrupt" hint
+        r"|^\s*Tip:\s+"           # "Tip: ..." suggestions
+    )
+
+    prompt_line = None
+    for line in reversed(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _DECORATOR_RE.match(stripped):
+            continue
+        prompt_line = stripped
+        break
+
+    if prompt_line is None:
         return None
 
-    return DetectedPrompt(
-        type=PromptType.TEXT_INPUT,
-        raw_text=text,
-        allows_free_text=True,
-    )
+    # Accept both ">" (legacy) and "❯" (Claude Code 2.x) as prompt indicators.
+    if prompt_line in (">", "\u276f", "\u276f\ufe0f"):
+        return DetectedPrompt(
+            type=PromptType.TEXT_INPUT,
+            raw_text=text,
+            allows_free_text=True,
+        )
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -243,19 +271,19 @@ def parse_terminal_output(raw: str) -> DetectedPrompt | None:
 def parse_notification_data(raw_json: str) -> DetectedPrompt | None:
     """Parse Claude Code hook Notification payload to extract prompt info.
 
-    The Notification hook provides JSON on stdin with fields like::
+    Claude Code sends JSON on stdin with ``notification_type`` as the key
+    discriminator.  Real-world payloads look like::
 
         {
             "session_id": "...",
             "cwd": "...",
-            "type": "permission_prompt",
-            "tool": "Bash",
-            "command": "ls -la",
+            "hook_event_name": "Notification",
+            "notification_type": "permission_prompt",
             "message": "Claude wants to execute a Bash command",
             ...
         }
 
-    This is used as a fallback when tmux capture is not available.
+    For backwards compatibility, the legacy ``type`` field is also checked.
 
     Args:
         raw_json: Raw JSON string from the hook's stdin payload.
@@ -275,17 +303,25 @@ def parse_notification_data(raw_json: str) -> DetectedPrompt | None:
     if not isinstance(data, dict):
         return None
 
-    notification_type = data.get("type", "")
+    # Claude Code uses "notification_type"; legacy/test data may use "type"
+    notification_type = data.get("notification_type") or data.get("type", "")
 
     # Permission prompt from Notification hook
     if notification_type == "permission_prompt":
-        tool = data.get("tool") or data.get("tool_name")
+        tool = data.get("tool_name") or data.get("tool")
         command_preview = (
             data.get("command")
             or data.get("file_path")
             or data.get("arguments")
             or data.get("description")
         )
+        # Try tool_input dict (some Claude Code versions nest details here)
+        if not command_preview and isinstance(data.get("tool_input"), dict):
+            ti = data["tool_input"]
+            command_preview = (
+                ti.get("command") or ti.get("file_path")
+                or ti.get("pattern") or ti.get("query")
+            )
         # Truncate long previews
         if command_preview and len(command_preview) > 200:
             command_preview = command_preview[:200] + "..."
@@ -301,6 +337,14 @@ def parse_notification_data(raw_json: str) -> DetectedPrompt | None:
             tool=tool,
             command_preview=command_preview,
             choices=choices,
+        )
+
+    # Idle prompt — Claude is waiting for free-text user input
+    if notification_type == "idle_prompt":
+        return DetectedPrompt(
+            type=PromptType.TEXT_INPUT,
+            raw_text=data.get("message", "Waiting for input"),
+            allows_free_text=True,
         )
 
     # Question / ask_user type notifications
