@@ -175,6 +175,12 @@
     }
   }
 
+  var PROMPT_TYPE_MAP = {
+    'pref-permission': 'permission',
+    'pref-question': 'question',
+    'pref-text-input': 'text_input'
+  };
+
   function initPrefsListeners() {
     var keys = Object.keys(PREF_DEFAULTS);
     for (var i = 0; i < keys.length; i++) {
@@ -184,6 +190,16 @@
           el.addEventListener('change', function () {
             savePref(key, el.checked);
             if (key === 'pref-eink') applyTheme();
+            // Sync prompt-type toggles to hub for Telegram filtering
+            if (PROMPT_TYPE_MAP[key]) {
+              var body = {};
+              body[PROMPT_TYPE_MAP[key]] = el.checked;
+              fetch('/api/attention/prefs', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+              }).catch(function() {});
+            }
             renderDashboard();
           });
         }
@@ -266,12 +282,8 @@
       var prompt = s.prompt;
       if (state === 'working' && !prefs['pref-working']) return false;
       if (state === 'thinking' && !prefs['pref-thinking']) return false;
-      if (state === 'waiting' && prompt) {
-        var ptype = prompt.type || '';
-        if (ptype === 'permission' && !prefs['pref-permission']) return false;
-        if (ptype === 'question' && !prefs['pref-question']) return false;
-        if (ptype === 'text_input' && !prefs['pref-text-input']) return false;
-      }
+      // Prompt type toggles only filter Telegram notifications (hub-side),
+      // the dashboard always shows all waiting sessions regardless.
       return true;
     });
   }
@@ -462,6 +474,20 @@
         checkAlerts();
         updateHeaderStats();
         renderDashboard();
+        break;
+
+      case 'prefs_updated':
+        if (msg.prefs) {
+          ['permission', 'question', 'text_input'].forEach(function(type) {
+            var key = 'pref-' + type.replace('_', '-');
+            var el = document.getElementById(key);
+            if (el && msg.prefs[type] !== undefined) {
+              el.checked = msg.prefs[type];
+              savePref(key, msg.prefs[type]);
+            }
+          });
+          renderDashboard();
+        }
         break;
 
       default:
@@ -949,6 +975,22 @@
     renderDashboard();
     connectWS();
     registerSW();
+
+    // Fetch hub notification prefs and sync toggles
+    fetch('/api/attention/prefs')
+      .then(function(r) { return r.json(); })
+      .then(function(hubPrefs) {
+        ['permission', 'question', 'text_input'].forEach(function(type) {
+          var key = 'pref-' + type.replace('_', '-');
+          var el = document.getElementById(key);
+          if (el && hubPrefs[type] !== undefined) {
+            el.checked = hubPrefs[type];
+            savePref(key, hubPrefs[type]);
+          }
+        });
+        renderDashboard();
+      })
+      .catch(function() {}); // offline = use localStorage
   }
 
   if (document.readyState === 'loading') {

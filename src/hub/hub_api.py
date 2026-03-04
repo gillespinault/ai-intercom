@@ -794,6 +794,18 @@ def create_hub_api(
             return Response(content="Skill not found", status_code=404)
         return Response(content=skill_path.read_text(), media_type="text/markdown")
 
+    # --- Dispatcher conversation history ---
+
+    @app.get("/api/dispatcher/history")
+    async def dispatcher_history(user_id: int, query: str = "", limit: int = 5):
+        """Search or retrieve dispatcher conversation history."""
+        conv_store = getattr(app.state, "conversation_store", None)
+        if not conv_store:
+            return {"messages": [], "error": "Conversation memory not enabled"}
+        if query:
+            return {"messages": conv_store.search(user_id, query, limit)}
+        return {"messages": conv_store.get_history(user_id, limit)}
+
     # --- Script distribution (for install.sh) ---
 
     @app.get("/api/scripts/{name}")

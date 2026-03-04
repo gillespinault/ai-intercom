@@ -2,7 +2,7 @@
 
 AI-Intercom enables AI coding agents across machines to communicate with each other and with humans through Telegram, with an Attention Hub for real-time session monitoring.
 
-## Current: v0.4.0 (2026-03-02)
+## Current: v0.6.0 (2026-03-04)
 
 | Feature | Status |
 |---------|--------|
@@ -16,6 +16,10 @@ AI-Intercom enables AI coding agents across machines to communicate with each ot
 | Push model (daemons push to hub) | Done |
 | Version tracking + self-upgrade + network-wide upgrade | Done |
 | GitHub Actions sync to dedicated repo | Done |
+| Voice via Telegram (STT + TTS via limn) | Done (v0.5.0) |
+| PWA Industrial Ops Console redesign | Done (v0.5.0) |
+| Telegram notification filtering (per-prompt-type) | Done (v0.6.0) |
+| Dispatcher conversation memory (SQLite) | Done (v0.6.0) |
 
 ## Next Steps
 
@@ -26,8 +30,6 @@ Prioritized features extracted from [BACKLOG.md](BACKLOG.md).
 | # | Feature | Description |
 |---|---------|-------------|
 | 1 | **Maintainer routing** | Automatic support routing per project. `intercom_support(service, issue)` routes to the responsible agent instead of just notifying the human. |
-| 2 | **Voice via Telegram** | STT (Whisper) + TTS (CosyVoice) on limn (Jetson Thor). Voice messages in Telegram transcribed, dispatched, response synthesized back as voice. |
-| 3 | **Dispatcher conversation memory** | Multi-turn conversations with context. Currently each Telegram message is independent. |
 
 ### Medium Priority
 

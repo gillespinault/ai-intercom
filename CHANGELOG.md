@@ -2,6 +2,17 @@
 
 All notable changes to AI-Intercom are documented here.
 
+## [0.6.0] - 2026-03-04
+
+### Added
+- **Telegram notification filtering** -- Per-prompt-type toggles (permission, question, text_input) to control which attention alerts send Telegram notifications. PWA always receives all sessions regardless of filter settings.
+- **PWA notification settings sync** -- Settings panel toggles now sync to hub via `PATCH /api/attention/prefs`, with WebSocket broadcast for multi-client consistency.
+- **Dispatcher conversation memory** -- SQLite-backed conversation history per Telegram user. Last 10 messages (truncated to 500 chars each) injected into dispatcher prompt for multi-turn context.
+- **`GET /api/dispatcher/history`** -- REST endpoint for searching/retrieving conversation history with `user_id`, `query`, and `limit` parameters.
+- **`GET /api/attention/prefs`** -- Retrieve current notification filter preferences.
+- **`PATCH /api/attention/prefs`** -- Update notification filter preferences (partial merge).
+- **Automatic conversation cleanup** -- Messages older than 48 hours purged on hub startup.
+
 ## [0.5.0] - 2026-03-03
 
 ### Added

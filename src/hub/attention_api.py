@@ -135,6 +135,20 @@ def create_attention_router(store: AttentionStore, registry: Registry) -> APIRou
             logger.error("Failed to proxy terminal from daemon: %s", e)
             return {"status": "error", "error": str(e)}
 
+    @router.get("/prefs")
+    async def get_notification_prefs():
+        """Return current Telegram notification preferences."""
+        return store.get_notification_prefs()
+
+    @router.patch("/prefs")
+    async def update_notification_prefs(request: Request):
+        """Update Telegram notification preferences (partial merge)."""
+        updates = await request.json()
+        updated = store.update_notification_prefs(updates)
+        # Broadcast to all PWA clients so they stay in sync
+        await store.broadcast({"type": "prefs_updated", "prefs": updated})
+        return updated
+
     @router.websocket("/ws")
     async def attention_websocket(websocket: WebSocket):
         """WebSocket endpoint for real-time attention updates.

@@ -53,6 +53,12 @@ agent_launcher:
 dispatcher:
   enabled: false
   target: "serverlab/serverlab"    # Agent that receives dispatched messages
+  memory:
+    enabled: true                  # Enable conversation memory for multi-turn context
+    max_messages: 10               # Number of recent messages to include in prompt
+    max_content_length: 500        # Max chars per message in history context
+    ttl_hours: 48                  # Auto-cleanup messages older than this
+    db_path: "data/conversations.db"
   system_prompt: |
     Tu es le dispatcher Telegram AI-Intercom. Tu reponds de maniere concise.
     Tu as acces aux outils MCP intercom pour communiquer avec les agents.

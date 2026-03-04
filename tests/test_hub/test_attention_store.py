@@ -559,3 +559,97 @@ class TestStaleSessionCleanup:
 
         await store._cleanup_stale_sessions()
         assert "stale-wait" not in store._notified_waiting
+
+
+class TestNotificationPrefs:
+    """Tests for Telegram notification preference filtering."""
+
+    def test_default_prefs_all_enabled(self):
+        store = AttentionStore()
+        prefs = store.get_notification_prefs()
+        assert prefs == {"permission": True, "question": True, "text_input": True}
+
+    def test_update_prefs_partial(self, tmp_path):
+        store = AttentionStore(prefs_path=str(tmp_path / "prefs.json"))
+        store.update_notification_prefs({"question": False})
+        prefs = store.get_notification_prefs()
+        assert prefs["question"] is False
+        assert prefs["permission"] is True  # unchanged
+
+    def test_update_prefs_ignores_unknown_keys(self, tmp_path):
+        store = AttentionStore(prefs_path=str(tmp_path / "prefs.json"))
+        store.update_notification_prefs({"unknown_key": True, "permission": False})
+        prefs = store.get_notification_prefs()
+        assert prefs["permission"] is False
+        assert "unknown_key" not in prefs
+
+    def test_should_notify_telegram_respects_prefs(self, tmp_path):
+        store = AttentionStore(prefs_path=str(tmp_path / "prefs.json"))
+        store.update_notification_prefs({"question": False})
+        assert store.should_notify_telegram("permission") is True
+        assert store.should_notify_telegram("question") is False
+        assert store.should_notify_telegram("text_input") is True
+
+    def test_should_notify_telegram_unknown_type_defaults_true(self):
+        store = AttentionStore()
+        assert store.should_notify_telegram("unknown") is True
+
+    def test_prefs_persistence(self, tmp_path):
+        prefs_file = tmp_path / "notification_prefs.json"
+        store = AttentionStore(prefs_path=str(prefs_file))
+        store.update_notification_prefs({"question": False})
+
+        # New store loads persisted prefs
+        store2 = AttentionStore(prefs_path=str(prefs_file))
+        assert store2.get_notification_prefs()["question"] is False
+
+
+class TestNotificationPrefsFiltering:
+    """Tests that notification prefs filter Telegram callbacks."""
+
+    @pytest.mark.asyncio
+    async def test_waiting_callback_skipped_when_type_disabled(self):
+        """If question prefs is False, callback is NOT called for question prompts."""
+        store = AttentionStore()
+        callback = AsyncMock()
+        store.set_on_waiting_callback(callback)
+        store.update_notification_prefs({"question": False})
+
+        session_data = _make_session(state=AttentionState.WAITING).model_dump()
+        session_data["prompt"] = {"type": "question", "raw_text": "Choose one"}
+
+        store.handle_event("laptop", {"type": "state_changed", "session": session_data})
+        await asyncio.sleep(0)
+
+        callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_waiting_callback_called_when_type_enabled(self):
+        """If permission prefs is True, callback IS called for permission prompts."""
+        store = AttentionStore()
+        callback = AsyncMock()
+        store.set_on_waiting_callback(callback)
+        # permission is True by default
+
+        session_data = _make_session(state=AttentionState.WAITING).model_dump()
+        session_data["prompt"] = {"type": "permission", "raw_text": "Allow Bash?", "tool": "Bash"}
+
+        store.handle_event("laptop", {"type": "state_changed", "session": session_data})
+        await asyncio.sleep(0)
+
+        callback.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_waiting_callback_called_when_no_prompt(self):
+        """Sessions in WAITING without a prompt always trigger callback."""
+        store = AttentionStore()
+        callback = AsyncMock()
+        store.set_on_waiting_callback(callback)
+
+        store.handle_event("laptop", {
+            "type": "new_session",
+            "session": _make_session(state=AttentionState.WAITING).model_dump(),
+        })
+        await asyncio.sleep(0)
+
+        callback.assert_called_once()

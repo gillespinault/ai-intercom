@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import WebSocket
 
@@ -27,16 +28,72 @@ class AttentionStore:
     WebSocket subscribers receive real-time broadcasts of all events.
     """
 
-    def __init__(self) -> None:
+    _DEFAULT_PREFS: dict[str, bool] = {
+        "permission": True,
+        "question": True,
+        "text_input": True,
+    }
+
+    def __init__(self, prefs_path: str = "data/notification_prefs.json") -> None:
         self._sessions: dict[str, AttentionSession] = {}
         self._subscribers: list[WebSocket] = []
         self._notified_waiting: set[str] = set()
         self._on_waiting_callback = None  # async callable(AttentionSession)
         self._cleanup_task: asyncio.Task | None = None
+        self._prefs_path = prefs_path
+        self._notification_prefs: dict[str, bool] = dict(self._DEFAULT_PREFS)
+        self._load_notification_prefs()
 
     def set_on_waiting_callback(self, callback) -> None:
         """Set an async callback to invoke when a session enters WAITING state."""
         self._on_waiting_callback = callback
+
+    # ------------------------------------------------------------------
+    # Notification preferences
+    # ------------------------------------------------------------------
+
+    def _load_notification_prefs(self) -> None:
+        """Load notification preferences from the JSON file if it exists."""
+        path = Path(self._prefs_path)
+        if path.is_file():
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                # Only merge known keys
+                for key in self._DEFAULT_PREFS:
+                    if key in data:
+                        self._notification_prefs[key] = bool(data[key])
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Failed to load notification prefs from %s: %s", self._prefs_path, e)
+
+    def _save_notification_prefs(self) -> None:
+        """Persist notification preferences to the JSON file."""
+        path = Path(self._prefs_path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(self._notification_prefs, f, indent=2)
+        except OSError as e:
+            logger.warning("Failed to save notification prefs to %s: %s", self._prefs_path, e)
+
+    def get_notification_prefs(self) -> dict[str, bool]:
+        """Return a copy of the current notification preferences."""
+        return dict(self._notification_prefs)
+
+    def update_notification_prefs(self, updates: dict) -> dict[str, bool]:
+        """Merge known keys from *updates* into preferences and persist.
+
+        Unknown keys are silently ignored. Returns the updated preferences.
+        """
+        for key in self._DEFAULT_PREFS:
+            if key in updates:
+                self._notification_prefs[key] = bool(updates[key])
+        self._save_notification_prefs()
+        return self.get_notification_prefs()
+
+    def should_notify_telegram(self, prompt_type: str) -> bool:
+        """Return whether Telegram notifications are enabled for *prompt_type*."""
+        return self._notification_prefs.get(prompt_type, True)
 
     # ------------------------------------------------------------------
     # Event handling
@@ -74,8 +131,11 @@ class AttentionStore:
                 if session.session_id not in self._notified_waiting:
                     self._notified_waiting.add(session.session_id)
                     if self._on_waiting_callback:
-                        import asyncio
-                        asyncio.create_task(self._on_waiting_callback(session))
+                        # Check notification prefs before Telegram callback
+                        prompt_type = session.prompt.type if session.prompt else None
+                        if prompt_type is None or self.should_notify_telegram(prompt_type):
+                            import asyncio
+                            asyncio.create_task(self._on_waiting_callback(session))
             elif session.session_id in self._notified_waiting:
                 # Reset debounce when leaving WAITING
                 self._notified_waiting.discard(session.session_id)

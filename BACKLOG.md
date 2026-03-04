@@ -16,18 +16,13 @@ Chaque projet a un "maintainer" (par defaut = lui-meme). Quand un agent a un pro
 - ~~Le tool `intercom_report_feedback` existant ecrit dans un JSONL~~ → FAIT (v0.2.1) : feedback + notification Telegram
 - Reste : routing actif vers le maintainer agent au lieu de juste notifier l'humain
 
-### 2. Conversation vocale via Telegram (STT + TTS via limn)
-Permettre une conversation vocale avec le dispatcher Telegram en utilisant les services STT et TTS heberges sur limn (Jetson Thor).
-- Telegram voice messages → STT (Whisper sur limn) → texte → dispatcher → reponse texte → TTS (CosyVoice sur limn) → voice message Telegram
-- Necessite : endpoint STT sur limn, endpoint TTS streaming sur limn (CosyVoice3)
-- Le dispatcher recoit du texte transcrit au lieu du texte tape, le reste du pipeline est identique
-- Bonus: detection de langue automatique
+### ~~2. Conversation vocale via Telegram (STT + TTS via limn)~~ → FAIT (v0.5.0)
+~~Permettre une conversation vocale avec le dispatcher Telegram en utilisant les services STT et TTS heberges sur limn (Jetson Thor).~~
+Implemente : Telegram voice messages → STT (Whisper sur limn) → texte → dispatcher → reponse texte → TTS (CosyVoice sur limn) → voice message Telegram. Detection de langue automatique incluse.
 
-### 3. Continuite conversationnelle du dispatcher
-Actuellement chaque message Telegram est independant (pas de memoire de conversation).
-- Maintenir un historique par utilisateur/session
-- Passer le contexte des echanges precedents au dispatcher
-- Permettre des conversations multi-tours ("fais X" → "maintenant fais Y sur le meme serveur")
+### ~~3. Continuite conversationnelle du dispatcher~~ → FAIT (v0.6.0)
+~~Actuellement chaque message Telegram est independant (pas de memoire de conversation).~~
+Implemente : SQLite-backed conversation memory. Derniers 10 messages (500 chars max) injectes dans le prompt dispatcher. Cleanup automatique >48h. API `GET /api/dispatcher/history` pour recherche dans l'historique.
 
 ### Known Bugs (discovered v0.5.0 testing)
 
@@ -135,3 +130,6 @@ HMAC existe mais les tokens sont souvent vides.
 - [x] Stale session cleanup : sessions >5min sans update supprimees automatiquement (v0.5.0)
 - [x] `install.sh` heartbeat hooks setup : telecharge script + configure hooks automatiquement (v0.5.0)
 - [x] `last_update` tracking sur `AttentionSession` pour detection staleness (v0.5.0)
+- [x] Voice via Telegram : STT (Whisper) + TTS (CosyVoice) sur limn, detection langue auto (v0.5.0)
+- [x] Telegram notification filtering : toggles per-prompt-type (permission/question/text_input) dans PWA, filtrage hub-side (v0.6.0)
+- [x] Dispatcher conversation memory : SQLite, 10 msg window, 500 chars/msg, TTL 48h, API history (v0.6.0)

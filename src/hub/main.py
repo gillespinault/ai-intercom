@@ -48,6 +48,18 @@ async def run_hub(config: IntercomConfig) -> None:
     # Ensure data directory exists
     Path("data").mkdir(parents=True, exist_ok=True)
 
+    # Conversation memory for dispatcher
+    from src.hub.conversation_store import ConversationStore
+    conv_store = None
+    memory_cfg = config.dispatcher.get("memory", {})
+    if memory_cfg.get("enabled", False):
+        conv_store = ConversationStore(
+            db_path=memory_cfg.get("db_path", "data/conversations.db")
+        )
+        conv_store.init()
+        conv_store.cleanup(max_age_hours=memory_cfg.get("ttl_hours", 48))
+        logger.info("Dispatcher conversation memory enabled")
+
     # Initialize components
     registry = Registry("data/registry.db")
     await registry.init()
@@ -178,7 +190,23 @@ async def run_hub(config: IntercomConfig) -> None:
         machine_id = target.split("/")[0] if "/" in target else target
         system_prompt = config.dispatcher.get("system_prompt", "")
 
-        mission = f"{system_prompt}\n\nUser message:\n{text}" if system_prompt else text
+        # Build mission with conversation history
+        if conv_store:
+            user_id = update.effective_user.id
+            # Store user message
+            conv_store.add_message(user_id=user_id, role="user", content=text)
+            # Build history context
+            history_context = conv_store.build_prompt_context(
+                user_id=user_id,
+                limit=memory_cfg.get("max_messages", 10),
+                max_content_length=memory_cfg.get("max_content_length", 500),
+            )
+            if history_context:
+                mission = f"{system_prompt}\n\n## Conversation history\n{history_context}\n\nUser message:\n{text}"
+            else:
+                mission = f"{system_prompt}\n\nUser message:\n{text}" if system_prompt else text
+        else:
+            mission = f"{system_prompt}\n\nUser message:\n{text}" if system_prompt else text
 
         # Look up target machine directly (skip router to avoid forum topic)
         machine = await registry.get_machine(machine_id)
@@ -348,8 +376,17 @@ async def run_hub(config: IntercomConfig) -> None:
             flags=_re.DOTALL,
         ).strip()
 
-        # Build final message with status header
+        # Store assistant response in conversation memory
         status = result.get("status", "unknown")
+        if conv_store and output and status == "completed":
+            conv_store.add_message(
+                user_id=update.effective_user.id,
+                role="assistant",
+                content=output[:2000],  # Truncate very long responses
+                mission_id=resp_mission_id,
+            )
+
+        # Build final message with status header
         if status == "completed":
             header = f"\u2705 *Termine* ({total_time})"
         elif status == "failed":
@@ -457,6 +494,10 @@ async def run_hub(config: IntercomConfig) -> None:
         registry, router, config,
         telegram_bot=bot, launcher=launcher, project_paths=project_paths,
     )
+
+    # Attach conversation store to API state for history endpoint
+    if conv_store:
+        hub_api.state.conversation_store = conv_store
 
     # Start attention store cleanup task
     hub_api.state.attention_store.start_cleanup()
