@@ -28,6 +28,24 @@ def test_short_word_repetition_ignored():
     assert is_hallucination("le le le le") is None
 
 
+def test_natural_french_not_flagged():
+    """Common French words appearing multiple times in natural speech."""
+    text = (
+        "Pour que les choses soient claires, "
+        "parce que les gens pensent que les résultats sont déjà là"
+    )
+    assert is_hallucination(text) is None
+
+
+def test_phrase_repetition_detected():
+    """Same multi-word phrase repeated back-to-back (Whisper hallucination)."""
+    result = is_hallucination(
+        "merci beaucoup. merci beaucoup. merci beaucoup."
+    )
+    assert result is not None
+    assert "repetitive phrase" in result
+
+
 def test_empty_text():
     assert is_hallucination("") is None
     assert is_hallucination("   ") is None

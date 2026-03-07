@@ -19,9 +19,17 @@ _HALLUCINATION_PHRASES = (
     "thank you for watching",
 )
 
-# Regex for repetitive text: same word (3+ chars) repeated 3+ times.
-_REPETITION_RE = re.compile(
-    r"\b(\w{3,})\b(?:[\W\w]*?\b\1\b){2,}",
+# Repetitive PHRASE: same multi-word phrase (2+ words, first word 3+ chars)
+# repeated back-to-back. Catches Whisper loops like "merci beaucoup. merci beaucoup."
+_PHRASE_REPETITION_RE = re.compile(
+    r"(\b\w{3,}(?:\s+\w{2,})+\b)\s*[.,!?;:]*\s*\1",
+    re.IGNORECASE,
+)
+
+# Repetitive WORD: same word repeated consecutively 3+ times.
+# Catches "merci merci merci" but NOT "les X les Y les Z" (non-consecutive).
+_WORD_REPETITION_RE = re.compile(
+    r"\b(\w{3,})(?:\s+\1){2,}\b",
     re.IGNORECASE,
 )
 
@@ -57,8 +65,12 @@ def is_hallucination(text: str) -> str | None:
         if phrase in normalized:
             return f"known phrase: '{phrase}'"
 
-    # 2. Repetitive text
-    if _REPETITION_RE.search(normalized):
-        return f"repetitive text: '{text.strip()[:40]}'"
+    # 2. Repetitive phrase (multi-word sequence repeated back-to-back)
+    if _PHRASE_REPETITION_RE.search(normalized):
+        return f"repetitive phrase: '{text.strip()[:40]}'"
+
+    # 3. Repetitive word (same word consecutively 3+ times)
+    if _WORD_REPETITION_RE.search(normalized):
+        return f"repetitive word: '{text.strip()[:40]}'"
 
     return None
