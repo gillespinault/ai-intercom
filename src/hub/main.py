@@ -386,34 +386,43 @@ async def run_hub(config: IntercomConfig) -> None:
                 mission_id=resp_mission_id,
             )
 
-        # Build final message with status header
+        # Update thinking message with final status (short)
+        status_emoji = {
+            "completed": "\u2705", "failed": "\u274c",
+            "timeout": "\u23f0",
+        }.get(status, "\U0001f4e8")
+        try:
+            await thinking_msg.edit_text(
+                f"{status_emoji} *{status.title()}* ({total_time})",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+
+        # Send response as NEW message(s) for visibility
+        from src.hub.telegram_helpers import _sanitize_markdown_v1, _split_message
+
         if status == "completed":
             header = f"\u2705 *Termine* ({total_time})"
         elif status == "failed":
             header = f"\u274c *Echec* ({total_time})"
         elif status == "timeout":
-            header = ""  # Timeout message is self-contained
+            header = ""
         else:
             header = f"\U0001f4e8 *Reponse* ({total_time})"
 
-        if header:
-            full_output = f"{header}\n\n{output}"
-        else:
-            full_output = output
+        full_output = f"{header}\n\n{output}" if header else output
 
-        # Truncate if too long for Telegram (4096 chars max)
-        if len(full_output) > 4000:
-            full_output = full_output[:4000] + "\n\n_... (tronque)_"
-
-        try:
-            await thinking_msg.edit_text(full_output, parse_mode="Markdown")
-        except Exception:
-            # Fallback to plain text if Markdown fails
+        parts = _split_message(full_output)
+        for part in parts:
+            sanitized = _sanitize_markdown_v1(part)
             try:
-                await thinking_msg.edit_text(full_output)
-            except Exception as e:
-                logger.warning("Failed to edit thinking message: %s", e)
-                await update.message.reply_text(full_output)
+                await update.message.reply_text(sanitized, parse_mode="Markdown")
+            except Exception:
+                try:
+                    await update.message.reply_text(part)
+                except Exception as e:
+                    logger.warning("Failed to send response part: %s", e)
 
         # TTS: send voice response if the original message was a voice message
         if (
