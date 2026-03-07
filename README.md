@@ -80,6 +80,10 @@ A distributed inter-agent communication system that enables AI coding agents (Cl
   - PWA dashboard at `/attention` shows real-time session status, terminal viewer, and prompt response UI
   - Telegram notifications alert when a session transitions to WAITING state
 - **TTS Narrator** -- Agents narrate their progress via `intercom_announce()`. The PWA synthesizes speech via XTTS and plays it automatically with per-category toggles, volume control, and verbosity settings
+- **Voice conversations** -- Send voice messages in Telegram; the hub transcribes via Whisper STT (with 25s chunking for long messages), dispatches to an agent, and returns both text and voice responses via XTTS TTS (with sentence-level chunking)
+- **Hallucination filter** -- Detects and rejects Whisper STT artifacts (known training phrases, repeated phrases/words) without false-flagging natural speech
+- **Active conversations** -- Follow-up messages within 10 minutes are injected into the running agent session instead of spawning a new mission
+- **Dispatcher preferences** -- PWA control panel for conversation mode, agent exchange visibility, voice response, and POS printing toggles (persisted + WebSocket-synced)
 - **Docker support** -- Separate Compose files for hub and daemon deployment
 
 ## Quick Start
@@ -200,6 +204,19 @@ agent_launcher:
   default_args: ["-p", "--output-format", "json"]  # Automatically switched to stream-json for background missions
   allowed_paths: []        # Empty = allow all
   max_mission_duration: 1800
+
+voice:                        # Voice services (STT/TTS)
+  enabled: true
+  stt_url: ""                 # Whisper STT endpoint
+  tts_url: ""                 # XTTS TTS endpoint
+  tts_language: "fr"
+  tts_speed: 1.0
+  response_voice: true        # Send voice reply alongside text
+
+voice_styles:                 # Per-agent TTS voice instructions
+  default: "Warm French female voice"
+  dispatcher: "Warm French female voice"
+  agent_project: "Calm French male voice"
 
 dispatcher:                  # Hub/standalone only
   enabled: false
@@ -361,6 +378,11 @@ src/
     router.py           # Message routing with approval checks
     approval.py         # Policy engine (glob/regex rules, runtime grants)
     telegram_bot.py     # Telegram bot (forum topics, commands, keyboards, /attention alerts)
+    telegram_helpers.py # Markdown sanitization and message splitting for Telegram
+    voice_services.py   # STT (Whisper, 25s chunking) and TTS (XTTS, sentence chunking)
+    hallucination_filter.py # Detects Whisper artifacts (known phrases, phrase/word repetition)
+    active_conversations.py # Tracks active dispatcher conversations for follow-up injection
+    conversation_store.py   # SQLite-backed conversation memory for dispatcher context
     attention_store.py  # In-memory session store with WebSocket broadcasting
     attention_api.py    # REST + WebSocket endpoints for the PWA dashboard
   daemon/

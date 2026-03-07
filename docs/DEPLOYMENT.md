@@ -279,14 +279,15 @@ The hooks track session lifecycle and activity timing. Prompt type detection is 
 
 > **Note:** Terminal viewing and prompt response work best with `claude-pty` (PTY wrapper with pyte emulator) or tmux. Sessions without either still show state (WORKING/WAITING) but without terminal content.
 
-## TTS Narrator Setup
+## Voice Services Setup
 
-The TTS Narrator allows agents to announce their progress vocally in the PWA dashboard via the XTTS service on Jetson Thor.
+AI-Intercom supports full voice conversations via Telegram: incoming voice messages are transcribed (Whisper STT), processed by the dispatcher agent, and responses are sent back as both text and voice (XTTS TTS). The same TTS service powers the PWA narrator.
 
 ### Prerequisites
 
-- XTTS service running on Jetson Thor (port 8433, Tailscale IP: `100.98.211.66`)
-- Hub config `voice.tts_url` pointing to the XTTS endpoint
+- **Whisper STT** service running on Jetson Thor (port 8432, Tailscale IP: `100.98.211.66`)
+- **XTTS v2 TTS** service running on Jetson Thor (port 8433, Tailscale IP: `100.98.211.66`)
+- `ffmpeg` available in the hub container (for OGG↔PCM conversion)
 
 ### Configuration
 
@@ -295,9 +296,27 @@ In `config/config.yml`:
 ```yaml
 voice:
   enabled: true
+  stt_url: "http://100.98.211.66:8432/v1/stt"
   tts_url: "http://100.98.211.66:8433/v1/tts"
   tts_language: "fr"
+  tts_speed: 1.0
+  tts_instruct: "Speak with a warm, natural native French female voice."
+  response_voice: true  # Send voice reply alongside text response
+
+voice_styles:  # Per-agent TTS voice (matched by agent ID convention)
+  default: "Warm French female voice"
+  dispatcher: "Warm French female voice"
+  agent_project: "Calm French male voice"
 ```
+
+### Voice Pipeline
+
+1. **Telegram voice message** → Hub downloads OGG, converts to 16kHz PCM via ffmpeg
+2. **STT chunking** → Audio split into 25s segments (aligned with Whisper's 30s window), each sent to Whisper with `initial_prompt` chaining for context continuity
+3. **Hallucination filter** → Rejects known Whisper artifacts (training phrases, repeated phrases/words) without false-flagging natural speech
+4. **Dispatch** → Transcribed text sent to dispatcher agent as a mission
+5. **Response** → Agent output sent as a new Telegram message (not an edit, so it triggers a notification)
+6. **TTS synthesis** → Response text split on sentence boundaries (max 250 chars per chunk), each synthesized separately, concatenated to PCM, converted to OGG, sent as Telegram voice message
 
 ### How it works
 

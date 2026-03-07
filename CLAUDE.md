@@ -23,6 +23,11 @@ src/
 │   ├── registry.py              # Agent/machine registry (in-memory + persistence)
 │   ├── router.py                # Message routing between agents
 │   ├── approval.py              # Mission approval logic
+│   ├── voice_services.py        # STT (Whisper, 25s chunking) + TTS (XTTS, sentence chunking)
+│   ├── hallucination_filter.py  # Whisper artifact detection (known phrases, phrase/word repetition)
+│   ├── telegram_helpers.py      # Markdown sanitization + message splitting for Telegram
+│   ├── active_conversations.py  # Tracks active conversations for follow-up injection (10min TTL)
+│   ├── conversation_store.py    # SQLite-backed conversation memory for dispatcher context
 │   ├── attention_store.py       # In-memory session store + WebSocket broadcasting to PWA
 │   └── attention_api.py         # REST + WebSocket endpoints for the attention dashboard
 ├── daemon/
