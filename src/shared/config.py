@@ -27,6 +27,7 @@ class IntercomConfig(BaseModel):
     agent_launcher: dict[str, Any] = Field(default_factory=dict)
     dispatcher: dict[str, Any] = Field(default_factory=dict)
     voice: dict[str, Any] = Field(default_factory=dict)
+    voice_styles: dict[str, str] = Field(default_factory=dict)
     projects: list[dict[str, Any]] = Field(default_factory=list)
 
     @property

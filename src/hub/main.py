@@ -34,6 +34,16 @@ def _format_elapsed(seconds: int) -> str:
     return f"{minutes}m"
 
 
+def _get_voice_style(agent_id: str, config: IntercomConfig) -> str:
+    """Resolve voice style for an agent based on config."""
+    styles = config.voice_styles
+    if agent_id in styles:
+        return styles[agent_id]
+    if "infra" in agent_id or "admin" in agent_id:
+        return styles.get("agent_infra", styles.get("default", ""))
+    return styles.get("agent_project", styles.get("default", ""))
+
+
 async def send_to_daemon(daemon_url: str, message: dict, token: str) -> dict:
     body = json.dumps(message).encode()
     headers = sign_request(body, "hub", token)

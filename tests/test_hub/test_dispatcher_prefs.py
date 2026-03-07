@@ -6,8 +6,14 @@ from pathlib import Path
 from src.hub.attention_store import AttentionStore
 
 
+def _make_store():
+    """Create an AttentionStore with isolated temp directory."""
+    td = tempfile.mkdtemp()
+    return AttentionStore(prefs_path=str(Path(td) / "notification_prefs.json"))
+
+
 def test_dispatcher_prefs_defaults():
-    store = AttentionStore(prefs_path=tempfile.mktemp())
+    store = _make_store()
     prefs = store.get_dispatcher_prefs()
     assert prefs["conversation_active"] is True
     assert prefs["show_agent_exchanges"] is True
@@ -17,7 +23,7 @@ def test_dispatcher_prefs_defaults():
 
 
 def test_dispatcher_prefs_update():
-    store = AttentionStore(prefs_path=tempfile.mktemp())
+    store = _make_store()
     updated = store.update_dispatcher_prefs({"hear_agents": True})
     assert updated["hear_agents"] is True
     assert updated["conversation_active"] is True  # unchanged
@@ -36,6 +42,6 @@ def test_dispatcher_prefs_persist():
 
 
 def test_dispatcher_prefs_ignores_unknown_keys():
-    store = AttentionStore(prefs_path=tempfile.mktemp())
+    store = _make_store()
     updated = store.update_dispatcher_prefs({"unknown_key": True})
     assert "unknown_key" not in updated
