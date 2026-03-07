@@ -33,6 +33,9 @@ def _tg_esc(text: str) -> str:
     return re.sub(r"([_*\[\]()~`>#+\-=|{}.!\\])", r"\\\1", str(text))
 
 
+from src.hub.telegram_helpers import _sanitize_markdown_v1, _split_message  # noqa: F401
+
+
 def format_agent_message(from_agent: str, message: str) -> str:
     """Format a message for display in Telegram."""
     if from_agent == "human":
