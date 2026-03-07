@@ -53,13 +53,24 @@ def _find_binary() -> Path | None:
 
 
 def _detect_venv(binary: Path | None) -> Path | None:
-    """Detect venv from binary location (e.g., /path/venv/bin/ai-intercom -> /path/venv)."""
-    if not binary:
-        return None
-    bin_dir = binary.parent
-    venv_dir = bin_dir.parent
-    if (venv_dir / "pyvenv.cfg").exists():
-        return venv_dir
+    """Detect venv from binary location or standard install path.
+
+    Checks two locations:
+    1. Binary's parent dir (e.g., /path/venv/bin/ai-intercom -> /path/venv)
+    2. Standard install.sh venv (~/.local/share/ai-intercom-daemon/venv/)
+    """
+    # Check binary's parent directory first
+    if binary:
+        bin_dir = binary.parent
+        venv_dir = bin_dir.parent
+        if (venv_dir / "pyvenv.cfg").exists():
+            return venv_dir
+
+    # Check standard install.sh location
+    standard_venv = Path.home() / ".local" / "share" / "ai-intercom-daemon" / "venv"
+    if (standard_venv / "pyvenv.cfg").exists():
+        return standard_venv
+
     return None
 
 
