@@ -6,6 +6,7 @@ import pytest
 
 from src.hub.voice_services import (
     VoiceConfig,
+    _split_sentences,
     ogg_to_pcm,
     parse_voice_config,
     pcm_to_ogg,
@@ -317,3 +318,57 @@ async def test_transcribe_hallucination_filtered():
         mock_client_cls.return_value = mock_client
         result = await transcribe(b"ogg", "http://stt:8432/v1/stt")
     assert result == "vrai texte"
+
+
+# --- _split_sentences ---
+
+
+def test_split_sentences_basic():
+    text = "Premiere phrase. Deuxieme phrase! Troisieme phrase?"
+    result = _split_sentences(text)
+    assert result == ["Premiere phrase.", "Deuxieme phrase!", "Troisieme phrase?"]
+
+
+def test_split_sentences_long_sentence():
+    """Sentences > 250 chars should be split on commas or spaces."""
+    long = "A" * 300
+    result = _split_sentences(long)
+    assert all(len(s) <= 250 for s in result)
+    assert "".join(result) == long
+
+
+def test_split_sentences_short_text():
+    result = _split_sentences("Bonjour")
+    assert result == ["Bonjour"]
+
+
+def test_split_sentences_empty():
+    assert _split_sentences("") == []
+    assert _split_sentences("   ") == []
+
+
+@pytest.mark.asyncio
+async def test_synthesize_long_text_chunked():
+    """Long text should be split into sentences and each synthesized separately."""
+    vc = VoiceConfig(enabled=True, tts_url="http://tts:8433/v1/tts", tts_language="fr")
+    long_text = "Premiere phrase assez longue. Deuxieme phrase tout aussi longue. Troisieme."
+
+    with patch("src.hub.voice_services.httpx.AsyncClient") as mock_client_cls, \
+         patch("src.hub.voice_services.pcm_to_ogg", new_callable=AsyncMock) as mock_pcm:
+
+        mock_resp = MagicMock()
+        mock_resp.content = b"\x00" * 100
+        mock_resp.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        mock_pcm.return_value = b"OggS-output"
+
+        result = await synthesize(long_text, vc)
+
+    assert result == b"OggS-output"
+    assert mock_client.post.call_count == 3

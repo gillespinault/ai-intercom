@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -157,29 +158,72 @@ async def transcribe(ogg_bytes: bytes, stt_url: str, language: str = "fr") -> st
     return result
 
 
+MAX_TTS_CHUNK = 250  # Max chars per TTS request (aligned with mnemos)
+
+_SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split text into sentence chunks, each <= MAX_TTS_CHUNK chars."""
+    text = text.strip()
+    if not text:
+        return []
+
+    sentences = _SENTENCE_RE.split(text)
+    chunks: list[str] = []
+
+    for sentence in sentences:
+        if len(sentence) <= MAX_TTS_CHUNK:
+            chunks.append(sentence)
+        else:
+            # Split long sentences on commas, then by word boundary
+            while sentence:
+                if len(sentence) <= MAX_TTS_CHUNK:
+                    chunks.append(sentence)
+                    break
+                cut = sentence.rfind(", ", 0, MAX_TTS_CHUNK)
+                if cut == -1:
+                    cut = sentence.rfind(" ", 0, MAX_TTS_CHUNK)
+                if cut == -1:
+                    cut = MAX_TTS_CHUNK
+                else:
+                    cut += 1  # include the space
+                chunks.append(sentence[:cut].rstrip())
+                sentence = sentence[cut:].lstrip()
+
+    return chunks
+
+
 async def synthesize(text: str, voice_config: VoiceConfig) -> bytes:
-    """Synthesize text to OGG Opus audio via CosyVoice TTS endpoint.
+    """Synthesize text to OGG Opus audio via TTS endpoint.
 
-    Pipeline: text -> POST /v1/tts -> raw PCM 16kHz -> ffmpeg -> OGG Opus
-
-    CosyVoice handles long text natively and resamples server-side,
-    so we request 16kHz directly. The `instruct` parameter controls voice style.
+    Splits long text into sentences (max 250 chars each) to avoid
+    TTS server failures on long inputs.
     """
-    payload: dict[str, Any] = {
-        "text": text,
-        "language": voice_config.tts_language,
-        "sample_rate": 16000,
-        "speed": voice_config.tts_speed,
-    }
-    if voice_config.tts_instruct:
-        payload["instruct"] = voice_config.tts_instruct
+    chunks = _split_sentences(text)
+    if not chunks:
+        raise RuntimeError("No text to synthesize")
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(voice_config.tts_url, json=payload)
-        resp.raise_for_status()
+    all_pcm = bytearray()
 
-    pcm_data = resp.content
-    if not pcm_data:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+        for chunk in chunks:
+            payload: dict[str, Any] = {
+                "text": chunk,
+                "language": voice_config.tts_language,
+                "sample_rate": 16000,
+                "speed": voice_config.tts_speed,
+            }
+            if voice_config.tts_instruct:
+                payload["instruct"] = voice_config.tts_instruct
+
+            resp = await client.post(voice_config.tts_url, json=payload)
+            resp.raise_for_status()
+
+            if resp.content:
+                all_pcm.extend(resp.content)
+
+    if not all_pcm:
         raise RuntimeError("TTS returned empty audio")
 
-    return await pcm_to_ogg(pcm_data, sample_rate=16000)
+    return await pcm_to_ogg(bytes(all_pcm), sample_rate=16000)
