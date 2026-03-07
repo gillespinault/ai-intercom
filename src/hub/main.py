@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 
 from src.daemon.agent_launcher import AgentLauncher
+from src.hub.active_conversations import ActiveConversationManager
 from src.hub.approval import ApprovalEngine, ApprovalLevel
 from src.hub.registry import Registry
 from src.hub.router import Router
@@ -177,6 +178,8 @@ async def run_hub(config: IntercomConfig) -> None:
             await update.callback_query.edit_message_text(f"Approved ({level_str}).")
             bot.resolve_approval(msg_id, level_str)
 
+    conversation_manager = ActiveConversationManager()
+
     # Dispatcher callback: routes natural language messages via claude -p
     async def on_dispatch(text: str, update, context) -> None:
         """Handle natural language messages by dispatching directly to a daemon."""
@@ -186,13 +189,41 @@ async def run_hub(config: IntercomConfig) -> None:
             )
             return
 
+        user_id = update.effective_user.id
+
+        # Check for active conversation to inject into
+        if conversation_manager.is_injectable(user_id):
+            active = conversation_manager.get_active(user_id)
+            try:
+                async with httpx.AsyncClient(timeout=10) as inject_client:
+                    resp = await inject_client.post(
+                        f"{active.daemon_url}/api/session/deliver",
+                        json={
+                            "mission_id": active.mission_id,
+                            "message": text,
+                            "from": "human",
+                        },
+                    )
+                    if resp.status_code == 200:
+                        conversation_manager.touch(user_id)
+                        if conv_store:
+                            conv_store.add_message(user_id=user_id, role="user", content=text)
+                        await update.message.reply_text(
+                            "\U0001f4ac _Injecte dans la conversation active_",
+                            parse_mode="Markdown",
+                        )
+                        return
+            except Exception as e:
+                logger.warning("Failed to inject into active conversation: %s", e)
+                conversation_manager.close(user_id)
+                # Fall through to new mission
+
         target = config.dispatcher.get("target", f"{config.machine_id}/home")
         machine_id = target.split("/")[0] if "/" in target else target
         system_prompt = config.dispatcher.get("system_prompt", "")
 
         # Build mission with conversation history
         if conv_store:
-            user_id = update.effective_user.id
             # Store user message
             conv_store.add_message(user_id=user_id, role="user", content=text)
             # Build history context
@@ -220,6 +251,7 @@ async def run_hub(config: IntercomConfig) -> None:
             return
 
         mission_id = str(uuid.uuid4())
+        conversation_manager.start(user_id, mission_id, machine["daemon_url"])
 
         # Send initial status message with target info
         thinking_msg = await update.message.reply_text(
@@ -423,6 +455,10 @@ async def run_hub(config: IntercomConfig) -> None:
                     await update.message.reply_text(part)
                 except Exception as e:
                     logger.warning("Failed to send response part: %s", e)
+
+        # Close conversation if mission completed or failed
+        if status in ("completed", "failed"):
+            conversation_manager.close(user_id)
 
         # TTS: send voice response if the original message was a voice message
         if (
