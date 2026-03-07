@@ -435,6 +435,23 @@ def create_attention_router(store: AttentionStore, registry: Registry) -> APIRou
         return updated
 
     # ------------------------------------------------------------------
+    # Dispatcher preferences
+    # ------------------------------------------------------------------
+
+    @router.get("/dispatcher-prefs")
+    async def get_dispatcher_prefs():
+        """Return current dispatcher preferences."""
+        return store.get_dispatcher_prefs()
+
+    @router.patch("/dispatcher-prefs")
+    async def update_dispatcher_prefs(request: Request):
+        """Update dispatcher preferences (partial merge)."""
+        updates = await request.json()
+        updated = store.update_dispatcher_prefs(updates)
+        await store.broadcast({"type": "dispatcher_prefs_updated", "dispatcher_prefs": updated})
+        return updated
+
+    # ------------------------------------------------------------------
     # TTS announce endpoint
     # ------------------------------------------------------------------
 

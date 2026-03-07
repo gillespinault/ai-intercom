@@ -46,6 +46,14 @@ class AttentionStore:
         },
     }
 
+    _DEFAULT_DISPATCHER_PREFS: dict[str, bool] = {
+        "conversation_active": True,
+        "show_agent_exchanges": True,
+        "voice_response": True,
+        "auto_print_pos": False,
+        "hear_agents": False,
+    }
+
     def __init__(self, prefs_path: str = "data/notification_prefs.json") -> None:
         self._sessions: dict[str, AttentionSession] = {}
         self._subscribers: list[WebSocket] = []
@@ -58,8 +66,10 @@ class AttentionStore:
         self._usage_stats: dict = {}
         self._pending_permissions: dict[str, PermissionRequest] = {}
         self._on_permission_resolved = None
+        self._dispatcher_prefs: dict[str, bool] = dict(self._DEFAULT_DISPATCHER_PREFS)
         self._load_notification_prefs()
         self._load_tts_prefs()
+        self._load_dispatcher_prefs()
 
     def set_on_waiting_callback(self, callback) -> None:
         """Set an async callback to invoke when a session enters WAITING state."""
@@ -148,6 +158,41 @@ class AttentionStore:
                     self._tts_prefs["categories"][key] = bool(updates["categories"][key])
         self._save_tts_prefs()
         return self.get_tts_prefs()
+
+    # ------------------------------------------------------------------
+    # Dispatcher preferences
+    # ------------------------------------------------------------------
+
+    def _load_dispatcher_prefs(self) -> None:
+        path = Path(self._prefs_path).parent / "dispatcher_prefs.json"
+        if path.is_file():
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                for key in self._DEFAULT_DISPATCHER_PREFS:
+                    if key in data:
+                        self._dispatcher_prefs[key] = bool(data[key])
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Failed to load dispatcher prefs: %s", e)
+
+    def _save_dispatcher_prefs(self) -> None:
+        path = Path(self._prefs_path).parent / "dispatcher_prefs.json"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(self._dispatcher_prefs, f, indent=2)
+        except OSError as e:
+            logger.warning("Failed to save dispatcher prefs: %s", e)
+
+    def get_dispatcher_prefs(self) -> dict[str, bool]:
+        return dict(self._dispatcher_prefs)
+
+    def update_dispatcher_prefs(self, updates: dict) -> dict[str, bool]:
+        for key in self._DEFAULT_DISPATCHER_PREFS:
+            if key in updates:
+                self._dispatcher_prefs[key] = bool(updates[key])
+        self._save_dispatcher_prefs()
+        return self.get_dispatcher_prefs()
 
     def should_notify_telegram(self, prompt_type: str) -> bool:
         """Return whether Telegram notifications are enabled for *prompt_type*."""
