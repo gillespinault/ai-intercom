@@ -201,7 +201,10 @@ def create_mcp_server(tools: IntercomTools) -> FastMCP:
 
     @mcp.tool()
     async def intercom_send(to: str, message: str, priority: str = "normal") -> dict:
-        """Send a fire-and-forget message to another agent.
+        """Send a fire-and-forget notification. You will NOT receive any response.
+
+        WARNING: Only use this for one-way notifications (FYI, status updates,
+        logs). If you need a response or want work done, use intercom_ask instead.
 
         Args:
             to: Target agent ID (machine/project). Use intercom_list_agents to discover.
@@ -217,11 +220,15 @@ def create_mcp_server(tools: IntercomTools) -> FastMCP:
         timeout: int = 300,
         require_approval: str = "auto",
     ) -> dict:
-        """Send a message and wait for a response from another agent.
+        """PREFERRED TOOL for delegating tasks. Launches a new agent on the
+        target machine and returns a mission_id to track progress.
 
-        Returns immediately with a mission_id. Use intercom_status(mission_id)
-        to poll for completion and retrieve the agent's output. Status values:
-        "launched", "running", "completed", "failed".
+        This is the right tool when you need work done or a response from
+        another machine. It does NOT require an active session on the target —
+        the daemon spawns a fresh agent automatically.
+
+        Workflow: intercom_ask → get mission_id → poll intercom_status until
+        status is "completed" or "failed" → read output.
 
         Args:
             to: Target agent ID (machine/project). Use intercom_list_agents to discover.
@@ -257,14 +264,13 @@ def create_mcp_server(tools: IntercomTools) -> FastMCP:
 
     @mcp.tool()
     async def intercom_status(mission_id: str) -> dict:
-        """Get the status of a running mission.
+        """Poll a mission launched by intercom_ask. Call repeatedly until done.
 
-        Returns mission status with output when completed. Poll this after
-        intercom_ask to get the agent's response. Status values: "running",
-        "completed", "failed", "launched".
+        Status values: "launched" (queued), "running" (agent working),
+        "completed" (output available in "output" field), "failed".
 
         Args:
-            mission_id: The mission ID to check.
+            mission_id: The mission ID returned by intercom_ask.
         """
         # Reads directly from Hub mission_store (push model)
         return await tools.hub_mission_status(mission_id=mission_id)
@@ -313,11 +319,15 @@ def create_mcp_server(tools: IntercomTools) -> FastMCP:
 
     @mcp.tool()
     async def intercom_chat(to: str, message: str) -> dict:
-        """Send a message to an agent's active session. Creates a conversation thread.
+        """Send a message to an agent's ALREADY RUNNING session (real-time chat).
 
-        Use intercom_list_agents() first to check if the target has an active session.
-        If no active session exists, you'll get status "no_active_session" — use
-        intercom_ask() instead to launch a new agent.
+        Only works if the target agent has an active session (check the "session"
+        field in intercom_list_agents). If no active session exists, this will
+        fail — use intercom_ask instead to launch a new agent.
+
+        Use this for real-time conversation with a running agent, not for
+        delegating tasks. The recipient sees the message in their inbox
+        between tool calls.
 
         Args:
             to: Target agent ID (machine/project).
@@ -376,9 +386,12 @@ def create_mcp_server(tools: IntercomTools) -> FastMCP:
     async def intercom_check_inbox() -> dict:
         """Check for pending messages from other agents.
 
-        Messages arrive automatically via hooks between tool calls, but you can
-        also check manually with this tool (e.g. when asked to "check your mail").
-        Returns unread messages and marks them as read.
+        Messages from intercom_chat and intercom_reply arrive in your inbox
+        automatically via hooks between tool calls, but you can also check
+        manually with this tool. Returns unread messages and marks them as read.
+
+        Each message includes a thread_id — use intercom_reply(thread_id, message)
+        to respond in the same conversation thread.
         """
         return await tools.check_inbox()
 
