@@ -224,3 +224,96 @@ async def test_synthesize_empty_audio():
 
         with pytest.raises(RuntimeError, match="empty audio"):
             await synthesize("Hello", vc)
+
+
+# --- chunked transcription ---
+
+
+@pytest.mark.asyncio
+async def test_transcribe_short_audio_single_segment():
+    """Audio < 25s should be sent as a single segment."""
+    pcm_10s = b"\x00\x01" * 160000  # 10s at 16kHz 16-bit
+
+    with patch("src.hub.voice_services.ogg_to_pcm", new_callable=AsyncMock) as mock_ogg, \
+         patch("src.hub.voice_services.httpx.AsyncClient") as mock_client_cls:
+        mock_ogg.return_value = pcm_10s
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"text": "phrase courte", "words": []}
+        mock_resp.raise_for_status = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+        result = await transcribe(b"fake-ogg", "http://stt:8432/v1/stt")
+    assert result == "phrase courte"
+    assert mock_client.post.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_transcribe_long_audio_multiple_segments():
+    """Audio > 25s should be split into multiple segments."""
+    pcm_50s = b"\x00\x01" * 800000  # 50s -> 2 segments
+    with patch("src.hub.voice_services.ogg_to_pcm", new_callable=AsyncMock) as mock_ogg, \
+         patch("src.hub.voice_services.httpx.AsyncClient") as mock_client_cls:
+        mock_ogg.return_value = pcm_50s
+        mock_resp1 = MagicMock()
+        mock_resp1.json.return_value = {"text": "premiere partie", "words": []}
+        mock_resp1.raise_for_status = MagicMock()
+        mock_resp2 = MagicMock()
+        mock_resp2.json.return_value = {"text": "deuxieme partie", "words": []}
+        mock_resp2.raise_for_status = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.post.side_effect = [mock_resp1, mock_resp2]
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+        result = await transcribe(b"fake-ogg", "http://stt:8432/v1/stt")
+    assert result == "premiere partie deuxieme partie"
+    assert mock_client.post.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_transcribe_initial_prompt_chaining():
+    """Segment N's transcription should be passed as initial_prompt to segment N+1."""
+    pcm_60s = b"\x00\x01" * 960000  # 60s -> 3 segments
+    with patch("src.hub.voice_services.ogg_to_pcm", new_callable=AsyncMock) as mock_ogg, \
+         patch("src.hub.voice_services.httpx.AsyncClient") as mock_client_cls:
+        mock_ogg.return_value = pcm_60s
+        responses = []
+        for text in ["un", "deux", "trois"]:
+            r = MagicMock()
+            r.json.return_value = {"text": text, "words": []}
+            r.raise_for_status = MagicMock()
+            responses.append(r)
+        mock_client = AsyncMock()
+        mock_client.post.side_effect = responses
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+        result = await transcribe(b"ogg", "http://stt:8432/v1/stt")
+    assert result == "un deux trois"
+    second_call_payload = mock_client.post.call_args_list[1][1]["json"]
+    assert second_call_payload.get("initial_prompt") == "un"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_hallucination_filtered():
+    """Segments detected as hallucinations should be excluded."""
+    pcm_50s = b"\x00\x01" * 800000
+    with patch("src.hub.voice_services.ogg_to_pcm", new_callable=AsyncMock) as mock_ogg, \
+         patch("src.hub.voice_services.httpx.AsyncClient") as mock_client_cls:
+        mock_ogg.return_value = pcm_50s
+        mock_resp1 = MagicMock()
+        mock_resp1.json.return_value = {"text": "vrai texte", "words": []}
+        mock_resp1.raise_for_status = MagicMock()
+        mock_resp2 = MagicMock()
+        mock_resp2.json.return_value = {"text": "Sous-titrage ST", "words": []}
+        mock_resp2.raise_for_status = MagicMock()
+        mock_client = AsyncMock()
+        mock_client.post.side_effect = [mock_resp1, mock_resp2]
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+        result = await transcribe(b"ogg", "http://stt:8432/v1/stt")
+    assert result == "vrai texte"

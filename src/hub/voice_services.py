@@ -12,6 +12,12 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# STT chunking constants — Whisper's window is 30s, 25s for safety margin
+CHUNK_DURATION_S = 25
+SAMPLE_RATE = 16000
+BYTES_PER_SAMPLE = 2  # 16-bit PCM
+CHUNK_BYTES = CHUNK_DURATION_S * SAMPLE_RATE * BYTES_PER_SAMPLE  # 800000
+
 
 @dataclass
 class VoiceConfig:
@@ -75,33 +81,80 @@ async def pcm_to_ogg(pcm_bytes: bytes, sample_rate: int = 16000) -> bytes:
     )
 
 
+def _split_pcm(pcm_data: bytes) -> list[bytes]:
+    """Split PCM data into segments of CHUNK_DURATION_S seconds."""
+    if len(pcm_data) <= CHUNK_BYTES:
+        return [pcm_data]
+    segments = []
+    offset = 0
+    while offset < len(pcm_data):
+        end = min(offset + CHUNK_BYTES, len(pcm_data))
+        segments.append(pcm_data[offset:end])
+        offset = end
+    return segments
+
+
 async def transcribe(ogg_bytes: bytes, stt_url: str, language: str = "fr") -> str:
     """Transcribe OGG voice message to text via Whisper STT endpoint.
 
-    Pipeline: OGG -> PCM 16kHz -> base64 -> POST /v1/stt -> text
+    For audio > 25s, splits into segments aligned with Whisper's 30s window
+    and chains initial_prompt for contextual continuity.
     """
+    from src.hub.hallucination_filter import is_hallucination
+
     pcm_data = await ogg_to_pcm(ogg_bytes)
     if not pcm_data:
         raise RuntimeError("ffmpeg produced empty PCM output")
 
-    audio_b64 = base64.b64encode(pcm_data).decode()
+    duration_s = len(pcm_data) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
+    segments = _split_pcm(pcm_data)
+    logger.info(
+        "STT: %.1fs audio, %d segment(s), %.1f KB PCM",
+        duration_s, len(segments), len(pcm_data) / 1024,
+    )
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            stt_url,
-            json={
+    transcriptions: list[str] = []
+    prev_text = ""
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+        for i, segment in enumerate(segments):
+            seg_duration = len(segment) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
+            audio_b64 = base64.b64encode(segment).decode()
+
+            payload: dict = {
                 "audio_base64": audio_b64,
-                "sample_rate": 16000,
+                "sample_rate": SAMPLE_RATE,
                 "language": language,
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
+                "word_timestamps": True,
+            }
+            if prev_text:
+                payload["initial_prompt"] = prev_text[-200:]
 
-    text = data.get("text", "").strip()
-    if not text:
+            logger.info(
+                "STT segment %d/%d: %.1fs, %.1f KB base64",
+                i + 1, len(segments), seg_duration, len(audio_b64) / 1024,
+            )
+
+            resp = await client.post(stt_url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+            text = data.get("text", "").strip()
+            if not text:
+                continue
+
+            reason = is_hallucination(text)
+            if reason:
+                logger.info("STT segment %d/%d REJECTED: %s", i + 1, len(segments), reason)
+                continue
+
+            transcriptions.append(text)
+            prev_text = text
+
+    result = " ".join(transcriptions)
+    if not result:
         raise RuntimeError("STT returned empty transcription")
-    return text
+    return result
 
 
 async def synthesize(text: str, voice_config: VoiceConfig) -> bytes:
