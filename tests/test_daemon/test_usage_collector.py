@@ -4,10 +4,12 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
 
-from src.daemon.usage_collector import UsageCollector
+from src.daemon.usage_collector import UsageCollector, _PROJECTS_DIR
 
 
 def test_format_tokens_compact():
@@ -77,64 +79,145 @@ def test_parse_context_no_usage():
         os.unlink(path)
 
 
-def test_parse_block_stats_from_json():
-    blocks_json = {
-        "blocks": [
-            {
-                "id": "2026-03-04T09:00:00.000Z",
-                "startTime": "2026-03-04T09:00:00.000Z",
-                "endTime": "2026-03-04T14:00:00.000Z",
-                "isActive": False,
-                "entries": 100,
-                "totalTokens": 24000000,
-            },
-            {
-                "id": "2026-03-04T14:00:00.000Z",
-                "startTime": "2026-03-04T14:00:00.000Z",
-                "endTime": "2026-03-04T19:00:00.000Z",
-                "isActive": True,
-                "entries": 200,
-                "totalTokens": 50000000,
-                "projection": {
-                    "remainingMinutes": 96,
-                    "totalTokens": 300000000,
-                    "totalCost": 100.0,
-                },
-            },
-        ],
-        "totals": {},
-    }
-    collector = UsageCollector()
-    result = collector.parse_block_stats(blocks_json)
-    assert result is not None
-    assert result.is_active is True
-    assert result.remaining_minutes == 96
-    assert result.start_time == "2026-03-04T14:00:00.000Z"
-    assert result.end_time == "2026-03-04T19:00:00.000Z"
-    assert 0 < result.elapsed_pct <= 100
+def _make_jsonl_entry(ts: datetime, input_tokens: int = 100, output_tokens: int = 50) -> str:
+    """Create a JSONL line for an assistant entry with usage."""
+    return json.dumps({
+        "type": "assistant",
+        "timestamp": ts.isoformat(),
+        "message": {
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_input_tokens": 0,
+            }
+        },
+    }) + "\n"
 
 
-def test_parse_block_stats_no_active():
-    blocks_json = {
-        "blocks": [
-            {"isActive": False, "startTime": "x", "endTime": "y"},
-        ],
-        "totals": {},
-    }
-    collector = UsageCollector()
-    result = collector.parse_block_stats(blocks_json)
-    assert result.is_active is False
+def test_scan_usage_entries():
+    """Scan finds assistant entries with usage from JSONL files."""
+    now = datetime.now(timezone.utc)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_dir = os.path.join(tmpdir, "test-project")
+        os.makedirs(project_dir)
+        jsonl_path = os.path.join(project_dir, "session1.jsonl")
+
+        with open(jsonl_path, "w") as f:
+            # Entry from 2 hours ago
+            f.write(_make_jsonl_entry(now - timedelta(hours=2), 100, 50))
+            # Entry from 30 min ago
+            f.write(_make_jsonl_entry(now - timedelta(minutes=30), 200, 80))
+            # Non-assistant entry (should be skipped)
+            f.write(json.dumps({"type": "user", "timestamp": now.isoformat()}) + "\n")
+
+        with patch("src.daemon.usage_collector._PROJECTS_DIR", tmpdir):
+            entries = UsageCollector._scan_usage_entries(since=now - timedelta(hours=3))
+
+        assert len(entries) == 2
+        assert entries[0][1] == 100  # first entry input_tokens
+        assert entries[1][1] == 200  # second entry input_tokens
 
 
-def test_parse_weekly_stats_from_json():
-    weekly_json = {
-        "weekly": [
-            {"week": "2026-02-22", "totalTokens": 500000000},
-            {"week": "2026-03-01", "totalTokens": 1200000000},
-        ],
-        "totals": {},
-    }
-    collector = UsageCollector()
-    result = collector.parse_weekly_stats(weekly_json)
-    assert result.total_tokens == 1200000000
-    assert result.display == "1.2B"
+def test_scan_skips_old_entries():
+    """Entries older than 'since' are excluded."""
+    now = datetime.now(timezone.utc)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_dir = os.path.join(tmpdir, "test-project")
+        os.makedirs(project_dir)
+        jsonl_path = os.path.join(project_dir, "session1.jsonl")
+
+        with open(jsonl_path, "w") as f:
+            # Old entry (10 hours ago)
+            f.write(_make_jsonl_entry(now - timedelta(hours=10), 500, 200))
+            # Recent entry (1 hour ago)
+            f.write(_make_jsonl_entry(now - timedelta(hours=1), 100, 50))
+
+        with patch("src.daemon.usage_collector._PROJECTS_DIR", tmpdir):
+            entries = UsageCollector._scan_usage_entries(since=now - timedelta(hours=5))
+
+        assert len(entries) == 1
+        assert entries[0][1] == 100
+
+
+def test_compute_block_stats_active():
+    """Block is active when there are entries in the last 5 hours."""
+    now = datetime.now(timezone.utc)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_dir = os.path.join(tmpdir, "test-project")
+        os.makedirs(project_dir)
+        jsonl_path = os.path.join(project_dir, "session1.jsonl")
+
+        with open(jsonl_path, "w") as f:
+            f.write(_make_jsonl_entry(now - timedelta(hours=2), 100, 50))
+            f.write(_make_jsonl_entry(now - timedelta(minutes=30), 200, 80))
+
+        with patch("src.daemon.usage_collector._PROJECTS_DIR", tmpdir):
+            collector = UsageCollector()
+            result = collector.compute_block_stats()
+
+        assert result.is_active is True
+        assert 0 < result.elapsed_pct <= 100
+        assert result.remaining_minutes > 0
+        assert result.reset_time  # non-empty HH:MM
+
+
+def test_compute_block_stats_inactive():
+    """No block when no entries in the last 5 hours."""
+    now = datetime.now(timezone.utc)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_dir = os.path.join(tmpdir, "test-project")
+        os.makedirs(project_dir)
+        jsonl_path = os.path.join(project_dir, "session1.jsonl")
+
+        with open(jsonl_path, "w") as f:
+            # Entry from 8 hours ago — outside 5h window
+            f.write(_make_jsonl_entry(now - timedelta(hours=8), 100, 50))
+
+        with patch("src.daemon.usage_collector._PROJECTS_DIR", tmpdir):
+            collector = UsageCollector()
+            result = collector.compute_block_stats()
+
+        assert result.is_active is False
+
+
+def test_compute_weekly_stats():
+    """Weekly stats sum tokens from the last 7 days."""
+    now = datetime.now(timezone.utc)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_dir = os.path.join(tmpdir, "test-project")
+        os.makedirs(project_dir)
+        jsonl_path = os.path.join(project_dir, "session1.jsonl")
+
+        with open(jsonl_path, "w") as f:
+            # 3 entries: 150 + 280 + 300 = 730 total tokens
+            f.write(_make_jsonl_entry(now - timedelta(days=1), 100, 50))
+            f.write(_make_jsonl_entry(now - timedelta(days=3), 200, 80))
+            f.write(_make_jsonl_entry(now - timedelta(hours=2), 150, 150))
+
+        with patch("src.daemon.usage_collector._PROJECTS_DIR", tmpdir):
+            collector = UsageCollector()
+            result = collector.compute_weekly_stats()
+
+        assert result.total_tokens == 730
+        assert result.display == "730"
+
+
+def test_compute_weekly_stats_excludes_old():
+    """Entries older than 7 days are excluded from weekly total."""
+    now = datetime.now(timezone.utc)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_dir = os.path.join(tmpdir, "test-project")
+        os.makedirs(project_dir)
+        jsonl_path = os.path.join(project_dir, "session1.jsonl")
+
+        with open(jsonl_path, "w") as f:
+            # Old entry (10 days ago)
+            f.write(_make_jsonl_entry(now - timedelta(days=10), 999999, 999999))
+            # Recent entry
+            f.write(_make_jsonl_entry(now - timedelta(hours=1), 100, 50))
+
+        with patch("src.daemon.usage_collector._PROJECTS_DIR", tmpdir):
+            collector = UsageCollector()
+            result = collector.compute_weekly_stats()
+
+        assert result.total_tokens == 150

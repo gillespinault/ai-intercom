@@ -43,17 +43,20 @@
   var playing = false;
   var lastPlayTime = 0;
   var recentMessages = {};
+  // Tracks the last announced state per session to suppress duplicates.
+  var lastAnnouncedState = {};
 
   function enqueue(text, category, priority) {
     if (!settings.enabled) return;
     if (!settings.categories[category]) return;
 
     var now = Date.now();
-    if (recentMessages[text] && now - recentMessages[text] < 10000) return;
+    // Dedup: same text within 60s is suppressed (covers keepalives at 120s).
+    if (recentMessages[text] && now - recentMessages[text] < 60000) return;
     recentMessages[text] = now;
 
     Object.keys(recentMessages).forEach(function (k) {
-      if (now - recentMessages[k] > 15000) delete recentMessages[k];
+      if (now - recentMessages[k] > 90000) delete recentMessages[k];
     });
 
     queue.push({ text: text, category: category, priority: priority, time: now });
@@ -132,32 +135,43 @@
       });
   }
 
+  // Pronunciation helpers — XTTS reads English loanwords as French.
+  // Rewrite project names and terms for natural French TTS output.
+  function pronounce(name) {
+    return name
+      .replace(/\bAI-intercom\b/gi, 'A.I. intercom')
+      .replace(/\bAI-/gi, 'A.I. ')
+      .replace(/-/g, ' ');
+  }
+
   function templateMinimal(project, type, data) {
+    var p = pronounce(project);
     switch (type) {
-      case 'waiting_permission': return project + ' permission';
-      case 'waiting_question': return project + ' question';
-      case 'waiting_input': return project + ' attend';
-      case 'new_session': return project + ' demarre';
-      case 'session_ended': return project + ' termine';
-      default: return project;
+      case 'waiting_permission': return p + ', permission';
+      case 'waiting_question': return p + ', question';
+      case 'waiting_input': return p + ' attend';
+      case 'new_session': return p + ' demarre';
+      case 'session_ended': return p + ' termine';
+      default: return p;
     }
   }
 
   function templateInformatif(project, type, data) {
+    var p = pronounce(project);
     switch (type) {
       case 'waiting_permission':
         var tool = (data && data.tool) || '';
-        return project + ' demande la permission' + (tool ? ' pour ' + tool : '');
+        return p + ' demande la permission' + (tool ? ' pour ' + tool : '');
       case 'waiting_question':
-        return project + ' pose une question';
+        return p + ' pose une question';
       case 'waiting_input':
-        return project + ' attend ton input';
+        return p + ' attend une reponse';
       case 'new_session':
-        return project + ' demarre';
+        return p + ' demarre';
       case 'session_ended':
-        return project + ' termine';
+        return p + ' termine';
       default:
-        return project;
+        return p;
     }
   }
 
@@ -181,23 +195,44 @@
       }
 
       if (!session) return;
+      var sid = session.session_id;
       var project = session.project || 'session';
+      var state = (session.state || '').toLowerCase();
 
-      if (type === 'state_changed' && session.state === 'waiting') {
-        var prompt = session.prompt || {};
-        var ptype = prompt.type || 'text_input';
-        if (ptype === 'permission') {
-          enqueue(generateText(project, 'waiting_permission', { tool: prompt.tool }), 'permission', 'normal');
-        } else if (ptype === 'question') {
-          enqueue(generateText(project, 'waiting_question', {}), 'attention', 'normal');
+      // Only announce on actual state transitions (state_changed),
+      // not keepalives, session_updates, or snapshot replays.
+      if (type === 'state_changed') {
+        // Track per-session state to suppress duplicate announcements
+        // (e.g. prompt change within the same WAITING state).
+        var stateKey = state;
+        if (state === 'waiting' && session.prompt) {
+          stateKey = state + ':' + (session.prompt.type || '');
+        }
+        if (lastAnnouncedState[sid] === stateKey) return;
+        lastAnnouncedState[sid] = stateKey;
+
+        if (state === 'waiting') {
+          var prompt = session.prompt || {};
+          var ptype = prompt.type || 'text_input';
+          if (ptype === 'permission') {
+            enqueue(generateText(project, 'waiting_permission', { tool: prompt.tool }), 'permission', 'normal');
+          } else if (ptype === 'question') {
+            enqueue(generateText(project, 'waiting_question', {}), 'attention', 'normal');
+          } else {
+            enqueue(generateText(project, 'waiting_input', {}), 'attention', 'normal');
+          }
         } else {
-          enqueue(generateText(project, 'waiting_input', {}), 'attention', 'normal');
+          // Clear announced state when session leaves WAITING
+          // so it can re-announce if it returns to WAITING later.
+          delete lastAnnouncedState[sid];
         }
       } else if (type === 'new_session') {
         enqueue(generateText(project, 'new_session', {}), 'lifecycle', 'low');
-      } else if (type === 'session_ended') {
+      } else if (type === 'session_ended' || type === 'session_end') {
         enqueue(generateText(project, 'session_ended', {}), 'lifecycle', 'low');
+        delete lastAnnouncedState[sid];
       }
+      // Ignore: keepalive, snapshot, session_update — no TTS for these.
     },
 
     getSettings: function () { return JSON.parse(JSON.stringify(settings)); },

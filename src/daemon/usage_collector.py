@@ -1,7 +1,8 @@
 """Collects Claude Code usage statistics.
 
 Reads JSONL transcripts to determine per-session context window usage,
-and runs ``ccusage`` CLI to gather billing block and weekly token stats.
+billing block timing, and weekly token totals — all from local files,
+with no external subprocess dependencies.
 
 Usage::
 
@@ -13,11 +14,11 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import glob
 import json
 import logging
 import os
-import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from src.shared.models import (
     BlockStats,
@@ -37,6 +38,12 @@ _TAIL_BYTES = 64 * 1024
 
 # Polling interval for the background collection loop (seconds).
 _POLL_INTERVAL = 60
+
+# Billing block window duration (Anthropic's 5-hour rolling window).
+_BLOCK_HOURS = 5
+
+# Default JSONL projects directory.
+_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 
 
 class UsageCollector:
@@ -138,96 +145,104 @@ class UsageCollector:
             return None
 
     # ------------------------------------------------------------------
-    # ccusage CLI interaction
+    # JSONL scanning for usage entries
     # ------------------------------------------------------------------
 
-    def _run_ccusage(self, *args: str) -> dict | None:
-        """Run ``ccusage`` via npx with nvm sourced, return parsed JSON.
+    @staticmethod
+    def _scan_usage_entries(since: datetime) -> list[tuple[datetime, int, int]]:
+        """Scan all JSONL transcripts for assistant usage entries since *since*.
 
-        Shells out to bash, sources nvm.sh, then runs
-        ``npx -y ccusage@latest <args> --json``.  Returns the parsed
-        JSON dict on success, ``None`` on failure.
+        Returns a list of ``(timestamp, input_tokens, output_tokens)`` tuples
+        sorted by timestamp ascending.  Only files modified after *since* are
+        read, and within each file only the relevant entries are kept.
         """
-        nvm_dir = os.environ.get("NVM_DIR", os.path.expanduser("~/.nvm"))
-        nvm_sh = os.path.join(nvm_dir, "nvm.sh")
+        since_ts = since.timestamp()
+        results: list[tuple[datetime, int, int]] = []
 
-        cmd_parts = ["npx", "-y", "ccusage@latest", *args, "--json"]
-        shell_cmd = f'source "{nvm_sh}" 2>/dev/null; {" ".join(cmd_parts)}'
+        for path in glob.glob(os.path.join(_PROJECTS_DIR, "*", "*.jsonl")):
+            try:
+                if os.path.getmtime(path) < since_ts:
+                    continue
+            except OSError:
+                continue
 
-        try:
-            result = subprocess.run(
-                ["bash", "-c", shell_cmd],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode != 0:
-                logger.warning("ccusage %s failed (rc=%d): %s", args, result.returncode, result.stderr[:200])
-                return None
+            try:
+                with open(path) as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
 
-            return json.loads(result.stdout)
+                        if entry.get("type") != "assistant":
+                            continue
 
-        except subprocess.TimeoutExpired:
-            logger.warning("ccusage %s timed out", args)
-            return None
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("ccusage %s error: %s", args, exc)
-            return None
+                        ts_str = entry.get("timestamp")
+                        if not ts_str:
+                            continue
+
+                        msg = entry.get("message")
+                        if not isinstance(msg, dict):
+                            continue
+                        usage = msg.get("usage")
+                        if not isinstance(usage, dict):
+                            continue
+
+                        try:
+                            ts = datetime.fromisoformat(
+                                ts_str.replace("Z", "+00:00")
+                            )
+                        except ValueError:
+                            continue
+
+                        if ts < since:
+                            continue
+
+                        inp = int(usage.get("input_tokens", 0))
+                        out = int(usage.get("output_tokens", 0))
+                        results.append((ts, inp, out))
+            except OSError as exc:
+                logger.debug("Cannot read transcript %s: %s", path, exc)
+
+        results.sort(key=lambda x: x[0])
+        return results
 
     # ------------------------------------------------------------------
-    # Block stats parsing
+    # Block stats (5-hour billing window)
     # ------------------------------------------------------------------
 
-    def parse_block_stats(self, blocks_json: dict) -> BlockStats:
-        """Parse ccusage blocks JSON into a ``BlockStats`` model.
+    def compute_block_stats(self) -> BlockStats:
+        """Compute the current billing block from JSONL transcripts.
 
-        Finds the active block (if any), computes elapsed percentage
-        from start/end times, and extracts remaining minutes from the
-        projection.  Also computes ``reset_time`` as local HH:MM of the
-        block end.
+        A block starts at the timestamp of the first assistant usage entry
+        within the last 5 hours.  If no entries exist, no block is active.
         """
-        blocks = blocks_json.get("blocks", [])
+        now = datetime.now(timezone.utc)
+        window_start = now - timedelta(hours=_BLOCK_HOURS)
 
-        # Find the active block
-        active = None
-        for block in blocks:
-            if block.get("isActive"):
-                active = block
-                break
-
-        if active is None:
+        entries = self._scan_usage_entries(since=window_start)
+        if not entries:
             return BlockStats(is_active=False)
 
-        start_str = active.get("startTime", "")
-        end_str = active.get("endTime", "")
+        block_start = entries[0][0]
+        block_end = block_start + timedelta(hours=_BLOCK_HOURS)
 
-        # Compute elapsed percentage
-        elapsed_pct = 0.0
-        reset_time = ""
-        try:
-            start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-            end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
-            now = datetime.now(timezone.utc)
+        total_seconds = (block_end - block_start).total_seconds()
+        elapsed_seconds = (now - block_start).total_seconds()
+        elapsed_pct = min(100.0, max(0.0, (elapsed_seconds / total_seconds) * 100.0))
 
-            total_seconds = (end_dt - start_dt).total_seconds()
-            elapsed_seconds = (now - start_dt).total_seconds()
+        remaining_seconds = max(0, (block_end - now).total_seconds())
+        remaining_minutes = int(remaining_seconds / 60)
 
-            if total_seconds > 0:
-                elapsed_pct = min(100.0, max(0.0, (elapsed_seconds / total_seconds) * 100.0))
-
-            # Reset time as local HH:MM
-            local_end = end_dt.astimezone()
-            reset_time = local_end.strftime("%H:%M")
-        except (ValueError, OverflowError) as exc:
-            logger.debug("Could not compute block timing: %s", exc)
-
-        # Extract remaining minutes from projection
-        projection = active.get("projection", {})
-        remaining_minutes = int(projection.get("remainingMinutes", 0))
+        local_end = block_end.astimezone()
+        reset_time = local_end.strftime("%H:%M")
 
         return BlockStats(
-            start_time=start_str,
-            end_time=end_str,
+            start_time=block_start.isoformat(),
+            end_time=block_end.isoformat(),
             elapsed_pct=round(elapsed_pct, 1),
             remaining_minutes=remaining_minutes,
             reset_time=reset_time,
@@ -235,21 +250,16 @@ class UsageCollector:
         )
 
     # ------------------------------------------------------------------
-    # Weekly stats parsing
+    # Weekly stats (7-day token totals)
     # ------------------------------------------------------------------
 
-    def parse_weekly_stats(self, weekly_json: dict) -> WeeklyStats:
-        """Parse ccusage weekly JSON into a ``WeeklyStats`` model.
+    def compute_weekly_stats(self) -> WeeklyStats:
+        """Compute total tokens used in the last 7 days from JSONL transcripts."""
+        now = datetime.now(timezone.utc)
+        week_start = now - timedelta(days=7)
 
-        Takes the last entry in the weekly array and formats its total
-        tokens using ``format_tokens``.
-        """
-        weeks = weekly_json.get("weekly", [])
-        if not weeks:
-            return WeeklyStats()
-
-        last_week = weeks[-1]
-        total = int(last_week.get("totalTokens", 0))
+        entries = self._scan_usage_entries(since=week_start)
+        total = sum(inp + out for _, inp, out in entries)
 
         return WeeklyStats(
             total_tokens=total,
@@ -260,22 +270,53 @@ class UsageCollector:
     # Async collection
     # ------------------------------------------------------------------
 
-    async def collect_ccusage_stats(self) -> tuple[BlockStats, WeeklyStats]:
-        """Run ccusage CLI for blocks and weekly stats in a thread executor.
+    async def collect_stats(self) -> tuple[BlockStats, WeeklyStats]:
+        """Compute block and weekly stats in a thread executor.
 
         Returns a tuple of ``(BlockStats, WeeklyStats)``.
+        The JSONL scan is done once for 7 days; block stats filter from that.
         """
         loop = asyncio.get_running_loop()
 
-        blocks_future = loop.run_in_executor(None, self._run_ccusage, "blocks")
-        weekly_future = loop.run_in_executor(None, self._run_ccusage, "weekly")
+        def _collect() -> tuple[BlockStats, WeeklyStats]:
+            # Single scan for 7 days covers both block (5h) and weekly needs
+            now = datetime.now(timezone.utc)
+            week_start = now - timedelta(days=7)
+            entries = self._scan_usage_entries(since=week_start)
 
-        blocks_json, weekly_json = await asyncio.gather(blocks_future, weekly_future)
+            # Block stats: filter to last 5 hours
+            window_start = now - timedelta(hours=_BLOCK_HOURS)
+            recent = [e for e in entries if e[0] >= window_start]
 
-        block_stats = self.parse_block_stats(blocks_json) if blocks_json else BlockStats()
-        weekly_stats = self.parse_weekly_stats(weekly_json) if weekly_json else WeeklyStats()
+            if recent:
+                block_start = recent[0][0]
+                block_end = block_start + timedelta(hours=_BLOCK_HOURS)
+                total_s = (block_end - block_start).total_seconds()
+                elapsed_s = (now - block_start).total_seconds()
+                elapsed_pct = min(100.0, max(0.0, (elapsed_s / total_s) * 100.0))
+                remaining_s = max(0, (block_end - now).total_seconds())
+                local_end = block_end.astimezone()
+                block = BlockStats(
+                    start_time=block_start.isoformat(),
+                    end_time=block_end.isoformat(),
+                    elapsed_pct=round(elapsed_pct, 1),
+                    remaining_minutes=int(remaining_s / 60),
+                    reset_time=local_end.strftime("%H:%M"),
+                    is_active=True,
+                )
+            else:
+                block = BlockStats(is_active=False)
 
-        return block_stats, weekly_stats
+            # Weekly stats: sum all entries
+            total_tokens = sum(inp + out for _, inp, out in entries)
+            weekly = WeeklyStats(
+                total_tokens=total_tokens,
+                display=UsageCollector.format_tokens(total_tokens),
+            )
+
+            return block, weekly
+
+        return await loop.run_in_executor(None, _collect)
 
     def build_payload(
         self,
@@ -284,7 +325,7 @@ class UsageCollector:
         """Combine block + weekly + per-session context into a payload.
 
         ``session_contexts`` maps session ID to its context stats.
-        Block and weekly stats come from the latest ``collect_ccusage_stats``
+        Block and weekly stats come from the latest ``collect_stats``
         results cached in ``self._latest``.
         """
         block = BlockStats()
@@ -301,7 +342,7 @@ class UsageCollector:
         )
 
     async def run(self) -> None:
-        """Background loop that collects ccusage stats every 60 seconds."""
+        """Background loop that collects usage stats every 60 seconds."""
         if self._stop_event is None:
             self._stop_event = asyncio.Event()
 
@@ -309,7 +350,7 @@ class UsageCollector:
 
         while not self._stop_event.is_set():
             try:
-                block_stats, weekly_stats = await self.collect_ccusage_stats()
+                block_stats, weekly_stats = await self.collect_stats()
                 self._latest = UsageStatsPayload(
                     block=block_stats,
                     weekly=weekly_stats,
