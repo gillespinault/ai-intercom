@@ -77,15 +77,21 @@ async def run_daemon(config: IntercomConfig) -> None:
         hub_client=hub_client,
     )
     app.state.launcher = launcher
+    app.state.hub_client = hub_client
 
-    # Start attention monitor
+    # Start attention monitor with usage collection
     from src.daemon.attention_monitor import AttentionMonitor
+    from src.daemon.usage_collector import UsageCollector
     attention_monitor = AttentionMonitor(
         machine_id=config.machine_id,
         hub_client=hub_client,
     )
+    usage_collector = UsageCollector()
+    attention_monitor.set_usage_collector(usage_collector)
     app.state.attention_monitor = attention_monitor
+    app.state.usage_collector = usage_collector
     asyncio.create_task(attention_monitor.run())
+    asyncio.create_task(usage_collector.run())
 
     server = uvicorn.Server(
         uvicorn.Config(app, host="0.0.0.0", port=daemon_port, log_level="info")

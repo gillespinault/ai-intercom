@@ -245,7 +245,7 @@ If not using `install.sh`, add the following hooks to `~/.claude/settings.json`:
 
 Each hook receives JSON on stdin from Claude Code (including `session_id` and `cwd`). The script writes a heartbeat file to `/tmp/cc-sessions/<pid>.json`.
 
-The second Notification hook (without matcher) captures all notification payloads in the `notification_data` field, enabling prompt detection for sessions running without tmux.
+The hooks track session lifecycle and activity timing. Prompt type detection is handled by terminal capture (via PTY or tmux), not by hook payloads.
 
 ### Step 3: Verify the pipeline
 
@@ -272,12 +272,50 @@ The second Notification hook (without matcher) captures all notification payload
 | `cc-heartbeat.sh` | Each machine | Writes heartbeat JSON files on hook events |
 | `/tmp/cc-sessions/*.json` | Each machine | Heartbeat files (one per Claude Code process) |
 | `AttentionMonitor` | Daemon process | Reads heartbeats, detects state changes, pushes events to hub |
-| `prompt_parser.py` | Daemon process | Parses tmux terminal output to extract prompt details |
+| `prompt_parser.py` | Daemon process | Parses terminal output (PTY/tmux) to extract prompt details |
 | `attention_store.py` | Hub process | Aggregates sessions from all daemons, broadcasts via WebSocket |
 | `attention_api.py` | Hub process | REST endpoints + WebSocket for the PWA |
 | `pwa/` | Hub (served) | Browser dashboard at `/attention` |
 
-> **Note:** Terminal viewing and prompt response require the Claude Code session to run inside tmux. Sessions not in tmux will still show state (WORKING/WAITING) but without terminal content.
+> **Note:** Terminal viewing and prompt response work best with `claude-pty` (PTY wrapper with pyte emulator) or tmux. Sessions without either still show state (WORKING/WAITING) but without terminal content.
+
+## TTS Narrator Setup
+
+The TTS Narrator allows agents to announce their progress vocally in the PWA dashboard via the XTTS service on Jetson Thor.
+
+### Prerequisites
+
+- XTTS service running on Jetson Thor (port 8433, Tailscale IP: `100.98.211.66`)
+- Hub config `voice.tts_url` pointing to the XTTS endpoint
+
+### Configuration
+
+In `config/config.yml`:
+
+```yaml
+voice:
+  enabled: true
+  tts_url: "http://100.98.211.66:8433/v1/tts"
+  tts_language: "fr"
+```
+
+### How it works
+
+1. **Agent** calls `intercom_announce("Phase 2 terminée, tous les tests passent", category="milestone")`
+2. **Daemon** `HubClient.push_announce()` sends to `POST /api/attention/announce`
+3. **Hub** broadcasts `tts_announce` WebSocket event to all PWA clients
+4. **PWA** `tts.js` module checks user preferences (category enabled? volume? cooldown?)
+5. **PWA** requests audio from `POST /api/attention/tts` (hub proxies to XTTS)
+6. **PWA** plays PCM audio via Web AudioContext (Int16→Float32, 24kHz)
+
+### PWA Settings
+
+Users configure TTS in the Attention Hub preferences panel:
+- **Enable/disable** voice globally
+- **Verbosity**: minimal (short phrases) or informatif (detailed)
+- **Volume**: 0-100%
+- **Cooldown**: minimum seconds between announcements (default: 5s)
+- **Per-category toggles**: milestone, difficulty, didactic, attention, permission, lifecycle
 
 ## HTTPS Access
 

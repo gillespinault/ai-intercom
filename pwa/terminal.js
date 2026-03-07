@@ -284,7 +284,7 @@
   function buildTerminalPanel(session) {
     var state = (session.state || 'idle').toLowerCase();
     var sessionName = session.session_name || shortProject(session.project) || 'Session';
-    var hasTmux = !!session.tmux_session;
+    var hasControl = !!session.tmux_session || !!session.pty_port;
 
     var panel = document.createElement('div');
     panel.className = 'terminal-panel';
@@ -296,8 +296,8 @@
     header.innerHTML =
       '<span class="terminal-panel-machine">' + esc(session.machine || '') + '</span>' +
       '<span class="terminal-panel-title">' + esc(sessionName) + '</span>' +
-      (!hasTmux ? '<span class="badge-monitoring" style="margin-left:auto;">monitor only</span>' : '') +
-      '<span class="card-state-badge ' + state + '" style="margin-left:' + (hasTmux ? 'auto' : 'var(--sp-2)') + ';">' + esc(state) + '</span>';
+      (!hasControl ? '<span class="badge-monitoring" style="margin-left:auto;">monitor only</span>' : '') +
+      '<span class="card-state-badge ' + state + '" style="margin-left:' + (hasControl ? 'auto' : 'var(--sp-2)') + ';">' + esc(state) + '</span>';
     panel.appendChild(header);
 
     // Body
@@ -305,8 +305,8 @@
     body.className = 'terminal-body';
     panel.appendChild(body);
 
-    if (hasTmux) {
-      // Initialize xterm.js for tmux sessions
+    if (hasControl) {
+      // Initialize xterm.js for tmux or PTY sessions
       var termState = getOrCreateTerminal(session.session_id);
       termState.container = body;
 
@@ -322,16 +322,16 @@
         }
       });
 
-      // Prompt overlay for waiting tmux sessions
+      // Prompt overlay for waiting sessions
       if (state === 'waiting' && session.prompt) {
         requestAnimationFrame(function () { createPromptOverlay(panel, session); });
       }
     } else {
-      // Non-tmux: show monitoring-only placeholder
+      // No control channel: show monitoring-only placeholder
       body.innerHTML =
         '<div class="terminal-no-tmux">' +
           '<div class="terminal-no-tmux-icon">\u25C9</div>' +
-          '<div>No tmux session attached</div>' +
+          '<div>No control channel</div>' +
           '<div style="opacity:0.5;">Terminal view unavailable</div>' +
         '</div>';
     }

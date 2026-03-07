@@ -43,6 +43,12 @@
   /** Dismissed tiles: hidden for this browser session only */
   var dismissedSessions = {};
 
+  /** Per-session context stats from usage_stats messages */
+  var sessionContextStats = {};
+
+  /** Pending permission requests: { request_id: {...} } */
+  var pendingPermissions = {};
+
   // ---- Audio Context (lazy init) ----
 
   var audioCtx = null;
@@ -135,30 +141,43 @@
     'pref-push': false,
     'pref-autoscroll': true,
     'pref-idle': true,
-    'pref-eink': false
+    'pref-eink': false,
+    'pref-group-by': 'none'  // 'none' | 'project' | 'machine'
   };
 
   var prefs = {};
+
+  var STRING_PREFS = { 'pref-group-by': true };
 
   function loadPrefs() {
     var keys = Object.keys(PREF_DEFAULTS);
     for (var i = 0; i < keys.length; i++) {
       var key = keys[i];
       var stored = localStorage.getItem('ah-' + key);
-      prefs[key] = stored !== null ? stored === 'true' : PREF_DEFAULTS[key];
+      if (STRING_PREFS[key]) {
+        prefs[key] = stored !== null ? stored : PREF_DEFAULTS[key];
+      } else {
+        prefs[key] = stored !== null ? stored === 'true' : PREF_DEFAULTS[key];
+      }
     }
   }
 
   function savePref(key, value) {
     prefs[key] = value;
-    localStorage.setItem('ah-' + key, value ? 'true' : 'false');
+    if (STRING_PREFS[key]) {
+      localStorage.setItem('ah-' + key, value);
+    } else {
+      localStorage.setItem('ah-' + key, value ? 'true' : 'false');
+    }
   }
 
   function syncPrefsToDOM() {
     var keys = Object.keys(prefs);
     for (var i = 0; i < keys.length; i++) {
       var el = document.getElementById(keys[i]);
-      if (el && el.type === 'checkbox') el.checked = prefs[keys[i]];
+      if (!el) continue;
+      if (el.type === 'checkbox') el.checked = prefs[keys[i]];
+      else if (el.tagName === 'SELECT') el.value = prefs[keys[i]];
     }
     applyTheme();
   }
@@ -188,7 +207,11 @@
         var el = document.getElementById(key);
         if (el) {
           el.addEventListener('change', function () {
-            savePref(key, el.checked);
+            if (STRING_PREFS[key]) {
+              savePref(key, el.value);
+            } else {
+              savePref(key, el.checked);
+            }
             if (key === 'pref-eink') applyTheme();
             // Sync prompt-type toggles to hub for Telegram filtering
             if (PROMPT_TYPE_MAP[key]) {
@@ -236,6 +259,22 @@
   function esc(str) {
     if (!str) return '';
     return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function formatToolInput(toolName, toolInput) {
+    if (!toolInput) return '';
+    if (toolName === 'Bash' && toolInput.command) return toolInput.command;
+    if (toolName === 'Edit' && toolInput.file_path) return toolInput.file_path;
+    if (toolName === 'Write' && toolInput.file_path) return toolInput.file_path;
+    if (toolName === 'Read' && toolInput.file_path) return toolInput.file_path;
+    return JSON.stringify(toolInput).substring(0, 120);
+  }
+
+  function sendPermissionDecision(requestId, decision) {
+    wsSend({ action: 'permission_decide', request_id: requestId, decision: decision });
+    delete pendingPermissions[requestId];
+    showToast(decision === 'allow' ? 'Allowed' : 'Denied', decision === 'allow' ? 'success' : 'warning');
+    renderDashboard();
   }
 
   function shortProject(path) {
@@ -312,6 +351,8 @@
 
   function updateHeaderStats() {
     if (!elHeaderStats) return;
+    var badgesEl = document.getElementById('stat-badges');
+    if (!badgesEl) return;
     var counts = { working: 0, thinking: 0, waiting: 0 };
     for (var i = 0; i < sessions.length; i++) {
       var st = (sessions[i].state || '').toLowerCase();
@@ -328,7 +369,96 @@
     if (counts.working > 0) {
       html += '<span class="stat-badge"><span class="stat-dot working"></span>' + counts.working + '</span>';
     }
-    elHeaderStats.innerHTML = html;
+    var permCount = Object.keys(pendingPermissions).length;
+    if (permCount > 0) {
+      html += '<span class="stat-badge"><span class="stat-dot permission"></span>' + permCount + '</span>';
+    }
+    badgesEl.innerHTML = html;
+  }
+
+  // ---- Usage Stats (block progress, reset countdown, weekly tokens) ----
+
+  function updateUsageStats(stats) {
+    if (!stats) return;
+
+    // Block bar
+    var block = stats.block || {};
+    var blockFill = document.getElementById('usage-block-fill');
+    var blockLabel = document.getElementById('usage-block-label');
+    if (blockFill) {
+      if (block.is_active) {
+        var pct = Math.min(100, Math.max(0, block.elapsed_pct || 0));
+        blockFill.style.width = pct + '%';
+        blockFill.className = 'usage-bar-fill' + (pct > 80 ? ' crit' : pct > 50 ? ' warn' : '');
+        if (blockLabel) blockLabel.textContent = Math.round(pct) + '%';
+      } else {
+        blockFill.style.width = '0%';
+        blockFill.className = 'usage-bar-fill';
+        if (blockLabel) blockLabel.textContent = '--';
+      }
+    }
+
+    // Reset countdown
+    var resetEl = document.getElementById('usage-reset');
+    if (resetEl) {
+      if (block.is_active && block.remaining_minutes != null) {
+        var h = Math.floor(block.remaining_minutes / 60);
+        var m = block.remaining_minutes % 60;
+        var countdown = h > 0 ? h + 'h' + String(m).padStart(2, '0') : m + 'm';
+        resetEl.textContent = countdown + ' \u2192 ' + (block.reset_time || '--:--');
+      } else {
+        resetEl.textContent = '--:--';
+      }
+    }
+
+    // Weekly tokens
+    var weeklyEl = document.getElementById('usage-weekly');
+    if (weeklyEl && stats.weekly) {
+      weeklyEl.textContent = 'W: ' + (stats.weekly.display || '--');
+    }
+
+    // Per-session context
+    if (stats.sessions) {
+      for (var sid in stats.sessions) {
+        sessionContextStats[sid] = stats.sessions[sid];
+      }
+    }
+    updateAllContextBars();
+  }
+
+  // ---- Per-Session Context Bar ----
+
+  function renderContextBarHTML(sessionId) {
+    var ctx = sessionContextStats[sessionId];
+    var pct = ctx ? Math.min(100, Math.max(0, ctx.context_percent || 0)) : 0;
+    var cls = pct > 80 ? ' crit' : pct > 50 ? ' warn' : '';
+    return '<div class="context-bar">' +
+      '<div class="context-bar-track"><div class="context-bar-fill' + cls + '" style="width:' + pct + '%"></div></div>' +
+      '<span class="context-bar-label">' + Math.round(pct) + '%</span>' +
+      '</div>';
+  }
+
+  function updateAllContextBars() {
+    for (var sid in sessionContextStats) {
+      var tile = document.querySelector('[data-session-id="' + sid + '"]');
+      if (!tile) continue;
+      var existing = tile.querySelector('.context-bar');
+      if (!existing) {
+        // Insert context bar at the end of tile content
+        tile.insertAdjacentHTML('beforeend', renderContextBarHTML(sid));
+      } else {
+        // Update existing bar
+        var ctx = sessionContextStats[sid];
+        var pct = ctx ? Math.min(100, ctx.context_percent || 0) : 0;
+        var fill = existing.querySelector('.context-bar-fill');
+        var label = existing.querySelector('.context-bar-label');
+        if (fill) {
+          fill.style.width = pct + '%';
+          fill.className = 'context-bar-fill' + (pct > 80 ? ' crit' : pct > 50 ? ' warn' : '');
+        }
+        if (label) label.textContent = Math.round(pct) + '%';
+      }
+    }
   }
 
   // ---- Timeline Tracking ----
@@ -449,8 +579,19 @@
     switch (msg.type) {
       case 'snapshot':
         sessions = msg.sessions || [];
+        // Load pending permissions from snapshot
+        pendingPermissions = {};
+        if (msg.pending_permissions) {
+          for (var pp = 0; pp < msg.pending_permissions.length; pp++) {
+            var perm = msg.pending_permissions[pp];
+            pendingPermissions[perm.request_id] = perm;
+          }
+        }
         for (var i = 0; i < sessions.length; i++) {
           recordTimelineEvent(sessions[i].session_id, (sessions[i].state || '').toLowerCase());
+        }
+        if (msg.usage_stats) {
+          updateUsageStats(msg.usage_stats);
         }
         checkAlerts();
         updateHeaderStats();
@@ -476,6 +617,10 @@
         renderDashboard();
         break;
 
+      case 'usage_stats':
+        updateUsageStats(msg.stats);
+        break;
+
       case 'prefs_updated':
         if (msg.prefs) {
           ['permission', 'question', 'text_input'].forEach(function(type) {
@@ -490,6 +635,22 @@
         }
         break;
 
+      case 'permission_request':
+        if (msg.request) {
+          pendingPermissions[msg.request.request_id] = msg.request;
+          if (prefs['pref-sound']) playAlertSound();
+          if (prefs['pref-vibrate']) triggerVibration();
+          renderDashboard();
+        }
+        break;
+
+      case 'permission_resolved':
+        if (msg.request_id) {
+          delete pendingPermissions[msg.request_id];
+          renderDashboard();
+        }
+        break;
+
       default:
         if (msg.session) {
           upsertSession(msg.session);
@@ -498,6 +659,11 @@
           renderDashboard();
         }
         break;
+    }
+
+    // TTS narration
+    if (window.AttentionTTS) {
+      window.AttentionTTS.handleEvent(msg);
     }
   }
 
@@ -588,14 +754,67 @@
 
     elContent.className = 'main-content tile-grid';
 
-    for (var i = 0; i < visible.length; i++) {
-      var tileEl = createTile(visible[i]);
-      // Restore input value
-      if (inputValues[visible[i].session_id]) {
-        var inp = tileEl.querySelector('.tile-text-input');
-        if (inp) inp.value = inputValues[visible[i].session_id];
+    // Render pending permission tiles — only for sessions NOT already
+    // visible (a visible waiting session already has its own action buttons).
+    var visibleSessionIds = {};
+    for (var vi = 0; vi < visible.length; vi++) {
+      visibleSessionIds[visible[vi].session_id] = true;
+    }
+    var permIds = Object.keys(pendingPermissions);
+    for (var pi = 0; pi < permIds.length; pi++) {
+      var perm = pendingPermissions[permIds[pi]];
+      if (!visibleSessionIds[perm.session_id]) {
+        elContent.appendChild(createPermissionTile(perm));
       }
-      elContent.appendChild(tileEl);
+    }
+
+    var groupBy = prefs['pref-group-by'] || 'none';
+
+    if (groupBy !== 'none') {
+      // Group sessions by project or machine
+      var groups = {};
+      var groupOrder = [];
+      for (var gi = 0; gi < visible.length; gi++) {
+        var groupKey = groupBy === 'project'
+          ? (shortProject(visible[gi].project) || 'unknown')
+          : (visible[gi].machine || 'unknown');
+        if (!groups[groupKey]) {
+          groups[groupKey] = [];
+          groupOrder.push(groupKey);
+        }
+        groups[groupKey].push(visible[gi]);
+      }
+      for (var go = 0; go < groupOrder.length; go++) {
+        var gk = groupOrder[go];
+        var groupEl = document.createElement('div');
+        groupEl.className = 'tile-group';
+        var labelEl = document.createElement('div');
+        labelEl.className = 'tile-group-label';
+        labelEl.textContent = gk;
+        groupEl.appendChild(labelEl);
+        var groupGrid = document.createElement('div');
+        groupGrid.className = 'tile-grid';
+        var members = groups[gk];
+        for (var gm = 0; gm < members.length; gm++) {
+          var tileEl = createTile(members[gm]);
+          if (inputValues[members[gm].session_id]) {
+            var inp = tileEl.querySelector('.tile-text-input');
+            if (inp) inp.value = inputValues[members[gm].session_id];
+          }
+          groupGrid.appendChild(tileEl);
+        }
+        groupEl.appendChild(groupGrid);
+        elContent.appendChild(groupEl);
+      }
+    } else {
+      for (var i = 0; i < visible.length; i++) {
+        var tileEl = createTile(visible[i]);
+        if (inputValues[visible[i].session_id]) {
+          var inp = tileEl.querySelector('.tile-text-input');
+          if (inp) inp.value = inputValues[visible[i].session_id];
+        }
+        elContent.appendChild(tileEl);
+      }
     }
   }
 
@@ -624,14 +843,14 @@
   function createTile(s) {
     var state = (s.state || 'idle').toLowerCase();
     var prompt = s.prompt;
-    var hasTmux = !!s.tmux_session;
+    var hasControl = !!s.tmux_session || !!s.pty_port;
     var sessionName = sessionDisplayName(s);
     var age = (s.idle_seconds != null && prefs['pref-idle'] !== false) ? formatAge(s.idle_seconds) : '';
 
     var tile = document.createElement('div');
     var isStale = s.idle_seconds != null && s.idle_seconds > 1800; // >30 min
     var isSkill = (s.project || '').indexOf('skill:') === 0;
-    var isSubagent = !s.tmux_session && !isSkill;
+    var isSubagent = !s.tmux_session && !s.pty_port && !isSkill;
     var cls = 'tile state-' + state;
     if (isStale) cls += ' tile-stale';
     if (isSkill || isSubagent) cls += ' tile-background';
@@ -640,7 +859,7 @@
 
     var html = '';
     if (state === 'waiting' && prompt) {
-      html = buildWaitingTile(s, prompt, sessionName, age, hasTmux);
+      html = buildWaitingTile(s, prompt, sessionName, age, hasControl);
     } else {
       html = buildIdleTile(s, sessionName, age, state);
     }
@@ -651,7 +870,49 @@
     return tile;
   }
 
-  function buildWaitingTile(s, prompt, sessionName, age, hasTmux) {
+  function createPermissionTile(perm) {
+    var tile = document.createElement('div');
+    tile.className = 'tile tile--permission';
+    tile.dataset.requestId = perm.request_id;
+
+    var toolPreview = formatToolInput(perm.tool_name, perm.tool_input);
+    var projectName = shortProject(perm.project) || perm.machine || '?';
+
+    var html = '';
+    html += '<div class="tile-header">';
+    html += '<span class="tile-name">' + esc(projectName) + '</span>';
+    html += '<span class="badge-tool badge-tool--permission">' + esc(perm.tool_name) + '</span>';
+    html += '</div>';
+
+    html += '<div class="tile-meta">';
+    html += '<span>@' + esc(perm.machine || '?') + '</span>';
+    html += '</div>';
+
+    if (toolPreview) {
+      html += '<div class="tile-code">' + esc(toolPreview.length > 120 ? toolPreview.substring(0, 117) + '\u2026' : toolPreview) + '</div>';
+    }
+
+    html += '<div class="tile-question">\ud83d\udd12 Allow this tool?</div>';
+
+    html += '<div class="tile-actions">';
+    html += '<button class="btn btn-sm btn-allow" data-action="perm-allow" data-rid="' + esc(perm.request_id) + '">Allow</button>';
+    html += '<button class="btn btn-sm btn-deny" data-action="perm-deny" data-rid="' + esc(perm.request_id) + '">Deny</button>';
+    html += '</div>';
+
+    tile.innerHTML = html;
+
+    // Wire button events
+    tile.querySelector('[data-action="perm-allow"]').addEventListener('click', function() {
+      sendPermissionDecision(perm.request_id, 'allow');
+    });
+    tile.querySelector('[data-action="perm-deny"]').addEventListener('click', function() {
+      sendPermissionDecision(perm.request_id, 'deny');
+    });
+
+    return tile;
+  }
+
+  function buildWaitingTile(s, prompt, sessionName, age, hasControl) {
     var ptype = prompt.type || 'unknown';
     var html = '';
 
@@ -663,7 +924,7 @@
     }
     if ((s.project || '').indexOf('skill:') === 0) {
       html += '<span class="badge-skill">skill</span>';
-    } else if (!hasTmux) {
+    } else if (!hasControl) {
       html += '<span class="badge-monitoring">sub</span>';
     }
     html += '<button class="tile-dismiss" data-action="dismiss" title="Hide tile">\u00d7</button>';
@@ -691,9 +952,14 @@
       html += '<div class="tile-question">\u276f Awaiting input</div>';
     }
 
-    // Action buttons (only for tmux sessions)
-    if (hasTmux) {
+    // Action buttons (for sessions with tmux or PTY control)
+    if (hasControl) {
       html += buildTileActions(s, prompt);
+    }
+
+    // Context bar (if stats available)
+    if (sessionContextStats[s.session_id]) {
+      html += renderContextBarHTML(s.session_id);
     }
 
     return html;
@@ -790,6 +1056,11 @@
     // State label
     html += '<div class="tile-state-label ' + esc(state) + '">' + esc(state.toUpperCase()) + '</div>';
 
+    // Context bar (if stats available)
+    if (sessionContextStats[s.session_id]) {
+      html += renderContextBarHTML(s.session_id);
+    }
+
     return html;
   }
 
@@ -799,8 +1070,8 @@
     tile.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-action]');
       if (!btn) {
-        // Click on tile body: open terminal slide if tmux available
-        if (!e.target.closest('input') && session.tmux_session) {
+        // Click on tile body: open terminal slide if tmux or PTY available
+        if (!e.target.closest('input') && (session.tmux_session || session.pty_port)) {
           openTerminalSlide(session.session_id);
         }
         return;
@@ -968,6 +1239,22 @@
     syncPrefsToDOM();
     initPrefsListeners();
 
+    // TTS settings init
+    if (window.AttentionTTS) {
+      var ttsS = window.AttentionTTS.getSettings();
+      var el;
+      el = document.getElementById('pref-tts-enabled'); if (el) el.checked = ttsS.enabled;
+      el = document.getElementById('pref-tts-verbosity'); if (el) el.value = ttsS.verbosity;
+      el = document.getElementById('pref-tts-volume'); if (el) el.value = ttsS.volume;
+      el = document.getElementById('pref-tts-cooldown'); if (el) el.value = ttsS.cooldown;
+      el = document.getElementById('pref-tts-cat-attention'); if (el) el.checked = ttsS.categories.attention;
+      el = document.getElementById('pref-tts-cat-permission'); if (el) el.checked = ttsS.categories.permission;
+      el = document.getElementById('pref-tts-cat-milestone'); if (el) el.checked = ttsS.categories.milestone;
+      el = document.getElementById('pref-tts-cat-difficulty'); if (el) el.checked = ttsS.categories.difficulty;
+      el = document.getElementById('pref-tts-cat-lifecycle'); if (el) el.checked = ttsS.categories.lifecycle;
+      el = document.getElementById('pref-tts-cat-didactic'); if (el) el.checked = ttsS.categories.didactic;
+    }
+
     var btnSettings = document.getElementById('btn-settings');
     if (btnSettings) btnSettings.addEventListener('click', togglePrefs);
     if (elPrefsBackdrop) elPrefsBackdrop.addEventListener('click', closePrefs);
@@ -991,6 +1278,9 @@
         renderDashboard();
       })
       .catch(function() {}); // offline = use localStorage
+
+    // Push TTS prefs to hub on startup (sync localStorage → hub)
+    pushTTSPrefsToHub();
   }
 
   if (document.readyState === 'loading') {
@@ -998,6 +1288,45 @@
   } else {
     init();
   }
+
+  // ---- TTS Settings Listeners ----
+
+  function pushTTSPrefsToHub() {
+    if (!window.AttentionTTS) return;
+    var s = window.AttentionTTS.getSettings();
+    fetch('/api/attention/tts-prefs', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: s.enabled, categories: s.categories })
+    }).catch(function () {});
+  }
+
+  function bindTTSPref(id, fn) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('change', function () {
+      fn(el.type === 'checkbox' ? el.checked : el.value);
+      pushTTSPrefsToHub();
+    });
+  }
+  if (window.AttentionTTS) {
+    bindTTSPref('pref-tts-enabled', function (v) { window.AttentionTTS.updateSettings({ enabled: v }); });
+    bindTTSPref('pref-tts-verbosity', function (v) { window.AttentionTTS.updateSettings({ verbosity: v }); });
+    bindTTSPref('pref-tts-volume', function (v) { window.AttentionTTS.updateSettings({ volume: parseFloat(v) }); });
+    bindTTSPref('pref-tts-cooldown', function (v) { window.AttentionTTS.updateSettings({ cooldown: parseInt(v, 10) }); });
+    bindTTSPref('pref-tts-cat-attention', function (v) { window.AttentionTTS.updateSettings({ categories: { attention: v } }); });
+    bindTTSPref('pref-tts-cat-permission', function (v) { window.AttentionTTS.updateSettings({ categories: { permission: v } }); });
+    bindTTSPref('pref-tts-cat-milestone', function (v) { window.AttentionTTS.updateSettings({ categories: { milestone: v } }); });
+    bindTTSPref('pref-tts-cat-difficulty', function (v) { window.AttentionTTS.updateSettings({ categories: { difficulty: v } }); });
+    bindTTSPref('pref-tts-cat-lifecycle', function (v) { window.AttentionTTS.updateSettings({ categories: { lifecycle: v } }); });
+    bindTTSPref('pref-tts-cat-didactic', function (v) { window.AttentionTTS.updateSettings({ categories: { didactic: v } }); });
+  }
+
+  // ---- AudioContext Unlock for TTS ----
+
+  document.addEventListener('click', function ttsTap() {
+    if (window.AttentionTTS) window.AttentionTTS.unlockAudio();
+    document.removeEventListener('click', ttsTap);
+  }, { once: true });
 
   // ---- Public API ----
 

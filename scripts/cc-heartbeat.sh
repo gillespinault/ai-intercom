@@ -4,7 +4,7 @@
 # Receives JSON on stdin from the hook system.
 #
 # Usage: echo '{"session_id":"...","cwd":"..."}' | cc-heartbeat.sh <action>
-# Actions: start, stop, working, waiting
+# Actions: start, stop, working, activity
 
 set -euo pipefail
 
@@ -14,7 +14,8 @@ INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 
-# Detect project: walk up from CWD to find first dir with CLAUDE.md or .git.
+# Detect project: walk up from CWD to find CLAUDE.md (preferred) or .git.
+# In monorepos, subprojects have their own CLAUDE.md so we find those first.
 # Special case: ~/.claude/skills/<name>/... → "skill:<name>"
 detect_project() {
     local dir="${1:-unknown}"
@@ -24,13 +25,31 @@ detect_project() {
             echo "skill:$(echo "$dir" | sed 's|.*/.claude/skills/||' | cut -d/ -f1)"
             return ;;
     esac
-    # Walk up to find project root
-    while [ "$dir" != "/" ] && [ "$dir" != "$HOME" ]; do
-        if [ -f "$dir/CLAUDE.md" ] || [ -d "$dir/.git" ]; then
-            basename "$dir"
+    # Pass 1: detect projects/<name>/ convention (monorepo subprojects)
+    # Must come first — prevents CLAUDE.md in the monorepo root from
+    # swallowing subproject names.
+    case "$dir" in
+        */projects/*)
+            echo "$dir" | sed 's|.*/projects/||' | cut -d/ -f1
+            return ;;
+    esac
+    # Pass 2: look for CLAUDE.md (most specific project marker)
+    local d="$dir"
+    while [ "$d" != "/" ] && [ "$d" != "$HOME" ]; do
+        if [ -f "$d/CLAUDE.md" ]; then
+            basename "$d"
             return
         fi
-        dir=$(dirname "$dir")
+        d=$(dirname "$d")
+    done
+    # Pass 3: fall back to .git root
+    d="$dir"
+    while [ "$d" != "/" ] && [ "$d" != "$HOME" ]; do
+        if [ -d "$d/.git" ]; then
+            basename "$d"
+            return
+        fi
+        d=$(dirname "$d")
     done
     # Fallback to basename of original CWD
     basename "${1:-unknown}"
@@ -50,6 +69,9 @@ if [ -n "${TMUX:-}" ]; then
     TMUX_SESSION="$(tmux display-message -p '#S' 2>/dev/null || true)"
 fi
 
+# Detect claude-pty relay port (transparent PTY wrapper)
+PTY_PORT=""
+
 DIR="/tmp/cc-sessions"
 mkdir -p "$DIR"
 
@@ -59,32 +81,37 @@ CC_PID=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
 PID="${CC_PID:-$PPID}"
 FILE="$DIR/${PID}.json"
 
-# Capture notification payload (truncated to 2000 chars) for non-tmux context
-NOTIFICATION_DATA=""
+# Discover claude-pty port file (written by claude-pty relay)
+PTY_PORT_FILE="$DIR/pty-${PID}.port"
+[ -f "$PTY_PORT_FILE" ] && PTY_PORT=$(cat "$PTY_PORT_FILE" 2>/dev/null || true)
+
+# Extract transcript_path from hook payload or preserve from existing heartbeat
+TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
+if [ -z "$TRANSCRIPT_PATH" ] && [ -f "$FILE" ]; then
+    TRANSCRIPT_PATH=$(jq -r '.transcript_path // empty' "$FILE" 2>/dev/null || true)
+fi
+
+# Backward compatibility: normalize old action names
 case "$ACTION" in
-    start|stop|working)
+    waiting|notification) ACTION="activity" ;;
+esac
+
+case "$ACTION" in
+    start|working|stop)
         TOOL_TIME=$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")
-        # Preserve notification_data from existing heartbeat (B2 fix)
-        if [ -f "$FILE" ]; then
-            NOTIFICATION_DATA=$(jq '.notification_data // ""' "$FILE" 2>/dev/null || echo '""')
-        fi
         ;;
-    waiting)
-        # Set a timestamp 60s in the past so idle_seconds >> 15s → WAITING
-        # (avoids sentinel year-2000 values that produce absurd idle_seconds)
-        TOOL_TIME=$(date -u -d '60 seconds ago' +"%Y-%m-%dT%H:%M:%S+00:00" 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%S+00:00")
-        # Capture the hook payload as notification context
-        NOTIFICATION_DATA=$(echo "$INPUT" | head -c 2000 | jq -Rs '.')
-        ;;
-    notification)
-        # Store notification context without changing last_tool_time.
-        # Read existing heartbeat to preserve last_tool_time.
+    activity)
+        # Notifications are informational — never reset idle timer.
+        # Only UserPromptSubmit (→ working) should reset last_tool_time,
+        # as it's the only reliable signal that the user typed something.
+        # Preserving last_tool_time lets the session transition to WAITING
+        # naturally when Claude finishes work and shows a prompt.
+        # The file write still updates mtime (used for abandon detection).
+        TOOL_TIME=""
         if [ -f "$FILE" ]; then
             TOOL_TIME=$(jq -r '.last_tool_time // empty' "$FILE" 2>/dev/null || echo "")
         fi
         [ -z "$TOOL_TIME" ] && TOOL_TIME=$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")
-        NOTIFICATION_DATA=$(echo "$INPUT" | head -c 2000 | jq -Rs '.')
-        ACTION="notification"
         ;;
     *)
         TOOL_TIME=$(date -u +"%Y-%m-%dT%H:%M:%S+00:00")
@@ -93,8 +120,13 @@ esac
 
 # Write atomically via temp file
 TMPFILE="$(mktemp "$DIR/.heartbeat.XXXXXX")"
-# Default NOTIFICATION_DATA to empty JSON string if not set
-[ -z "$NOTIFICATION_DATA" ] && NOTIFICATION_DATA='""'
+
+# Format transcript_path as JSON value
+if [ -n "$TRANSCRIPT_PATH" ]; then
+    TP_JSON="\"$TRANSCRIPT_PATH\""
+else
+    TP_JSON="null"
+fi
 
 cat > "$TMPFILE" << ENDJSON
 {
@@ -106,8 +138,9 @@ cat > "$TMPFILE" << ENDJSON
   "last_tool": "hook-$ACTION",
   "last_tool_time": "$TOOL_TIME",
   "tmux_session": "$TMUX_SESSION",
+  "pty_port": ${PTY_PORT:-null},
   "rc_url": null,
-  "notification_data": $NOTIFICATION_DATA
+  "transcript_path": $TP_JSON
 }
 ENDJSON
 

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fastapi import WebSocket
 
-from src.shared.models import AttentionEvent, AttentionSession, AttentionState
+from src.shared.models import AttentionEvent, AttentionSession, AttentionState, PermissionRequest, PermissionDecision
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,18 @@ class AttentionStore:
         "text_input": True,
     }
 
+    _DEFAULT_TTS_PREFS: dict = {
+        "enabled": True,
+        "categories": {
+            "milestone": True,
+            "difficulty": True,
+            "didactic": True,
+            "attention": True,
+            "permission": True,
+            "lifecycle": True,
+        },
+    }
+
     def __init__(self, prefs_path: str = "data/notification_prefs.json") -> None:
         self._sessions: dict[str, AttentionSession] = {}
         self._subscribers: list[WebSocket] = []
@@ -42,7 +54,12 @@ class AttentionStore:
         self._cleanup_task: asyncio.Task | None = None
         self._prefs_path = prefs_path
         self._notification_prefs: dict[str, bool] = dict(self._DEFAULT_PREFS)
+        self._tts_prefs: dict = json.loads(json.dumps(self._DEFAULT_TTS_PREFS))
+        self._usage_stats: dict = {}
+        self._pending_permissions: dict[str, PermissionRequest] = {}
+        self._on_permission_resolved = None
         self._load_notification_prefs()
+        self._load_tts_prefs()
 
     def set_on_waiting_callback(self, callback) -> None:
         """Set an async callback to invoke when a session enters WAITING state."""
@@ -91,6 +108,47 @@ class AttentionStore:
         self._save_notification_prefs()
         return self.get_notification_prefs()
 
+    # ------------------------------------------------------------------
+    # TTS preferences
+    # ------------------------------------------------------------------
+
+    def _load_tts_prefs(self) -> None:
+        path = Path(self._prefs_path).parent / "tts_prefs.json"
+        if path.is_file():
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                if "enabled" in data:
+                    self._tts_prefs["enabled"] = bool(data["enabled"])
+                if "categories" in data and isinstance(data["categories"], dict):
+                    for key in self._DEFAULT_TTS_PREFS["categories"]:
+                        if key in data["categories"]:
+                            self._tts_prefs["categories"][key] = bool(data["categories"][key])
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Failed to load TTS prefs: %s", e)
+
+    def _save_tts_prefs(self) -> None:
+        path = Path(self._prefs_path).parent / "tts_prefs.json"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(self._tts_prefs, f, indent=2)
+        except OSError as e:
+            logger.warning("Failed to save TTS prefs: %s", e)
+
+    def get_tts_prefs(self) -> dict:
+        return json.loads(json.dumps(self._tts_prefs))
+
+    def update_tts_prefs(self, updates: dict) -> dict:
+        if "enabled" in updates:
+            self._tts_prefs["enabled"] = bool(updates["enabled"])
+        if "categories" in updates and isinstance(updates["categories"], dict):
+            for key in self._DEFAULT_TTS_PREFS["categories"]:
+                if key in updates["categories"]:
+                    self._tts_prefs["categories"][key] = bool(updates["categories"][key])
+        self._save_tts_prefs()
+        return self.get_tts_prefs()
+
     def should_notify_telegram(self, prompt_type: str) -> bool:
         """Return whether Telegram notifications are enabled for *prompt_type*."""
         return self._notification_prefs.get(prompt_type, True)
@@ -125,6 +183,7 @@ class AttentionStore:
 
         if event_type in ("new_session", "state_changed"):
             session.last_update = datetime.now(timezone.utc).isoformat()
+            prev_session = self._sessions.get(session.session_id)
             self._sessions[session.session_id] = session
             # Notify on WAITING transition (debounced per session)
             if session.state == AttentionState.WAITING:
@@ -136,7 +195,26 @@ class AttentionStore:
                         if prompt_type is None or self.should_notify_telegram(prompt_type):
                             import asyncio
                             asyncio.create_task(self._on_waiting_callback(session))
-            elif session.session_id in self._notified_waiting:
+            else:
+                # Left WAITING — cancel any stale permission tiles
+                was_waiting = (
+                    session.session_id in self._notified_waiting
+                    or (prev_session and prev_session.state == AttentionState.WAITING)
+                )
+                if was_waiting:
+                    cancelled = self.cancel_permissions_for_session(session.session_id)
+                    if cancelled:
+                        import asyncio
+                        for rid in cancelled:
+                            asyncio.create_task(self.broadcast({
+                                "type": "permission_resolved",
+                                "request_id": rid,
+                                "expired": True,
+                            }))
+                            logger.info(
+                                "Auto-cancelled permission %s (session %s left WAITING)",
+                                rid, session.session_id[:12],
+                            )
                 # Reset debounce when leaving WAITING
                 self._notified_waiting.discard(session.session_id)
         elif event_type == "keepalive":
@@ -164,6 +242,92 @@ class AttentionStore:
     def get_session(self, session_id: str) -> AttentionSession | None:
         """Look up a single session by its ID."""
         return self._sessions.get(session_id)
+
+    # ------------------------------------------------------------------
+    # Usage stats
+    # ------------------------------------------------------------------
+
+    def update_usage_stats(self, stats: dict) -> None:
+        """Store the latest usage stats from a daemon."""
+        self._usage_stats = stats
+
+    def get_usage_stats(self) -> dict:
+        """Return the latest usage stats."""
+        return self._usage_stats
+
+    # ------------------------------------------------------------------
+    # Permission approval
+    # ------------------------------------------------------------------
+
+    def set_on_permission_resolved(self, callback) -> None:
+        """Set a callback invoked when a permission is resolved."""
+        self._on_permission_resolved = callback
+
+    def add_pending_permission(self, request: PermissionRequest) -> list[str]:
+        """Store a pending permission request.
+
+        If another permission is already pending for the same ``session_id``,
+        it is automatically cancelled (a session can only have one pending
+        permission at a time — a new request proves the old one was resolved
+        locally).
+
+        Returns a list of cancelled ``request_id`` values (for broadcasting).
+        """
+        cancelled: list[str] = []
+        for rid, existing in list(self._pending_permissions.items()):
+            if existing.session_id == request.session_id:
+                self._pending_permissions.pop(rid, None)
+                cancelled.append(rid)
+        self._pending_permissions[request.request_id] = request
+        return cancelled
+
+    def get_pending_permission(self, request_id: str) -> PermissionRequest | None:
+        """Look up a pending permission by request_id."""
+        return self._pending_permissions.get(request_id)
+
+    def list_pending_permissions(self) -> list[PermissionRequest]:
+        """Return all pending permission requests."""
+        return list(self._pending_permissions.values())
+
+    def resolve_permission(self, request_id: str, decision: PermissionDecision) -> bool:
+        """Resolve a pending permission and notify listeners."""
+        req = self._pending_permissions.pop(request_id, None)
+        if req is None:
+            return False
+        if self._on_permission_resolved:
+            self._on_permission_resolved(request_id, decision)
+        return True
+
+    def cancel_permissions_for_session(self, session_id: str) -> list[str]:
+        """Remove all pending permissions for a given session.
+
+        Called when a session transitions away from WAITING — proving any
+        pending permission was resolved locally.
+
+        Returns cancelled ``request_id`` values.
+        """
+        cancelled: list[str] = []
+        for rid, req in list(self._pending_permissions.items()):
+            if req.session_id == session_id:
+                self._pending_permissions.pop(rid, None)
+                cancelled.append(rid)
+        return cancelled
+
+    def expire_permissions(self, max_age_seconds: int = 150) -> list[str]:
+        """Remove permissions older than max_age_seconds. Returns expired IDs."""
+        now = datetime.now(timezone.utc)
+        expired: list[str] = []
+        for rid, req in list(self._pending_permissions.items()):
+            try:
+                created = datetime.fromisoformat(req.created_at)
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if (now - created).total_seconds() > max_age_seconds:
+                    expired.append(rid)
+                    self._pending_permissions.pop(rid, None)
+            except (ValueError, TypeError):
+                pass
+        return expired
 
     # ------------------------------------------------------------------
     # WebSocket subscription
@@ -215,6 +379,14 @@ class AttentionStore:
             await asyncio.sleep(60)  # Check every minute
             try:
                 await self._cleanup_stale_sessions()
+                # Also expire stale permission requests
+                expired = self.expire_permissions()
+                for rid in expired:
+                    await self.broadcast({
+                        "type": "permission_resolved",
+                        "request_id": rid,
+                        "expired": True,
+                    })
             except Exception as e:
                 logger.error("Stale session cleanup error: %s", e)
 

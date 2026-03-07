@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ai-intercom"
-version = "0.5.0"
+version = "0.7.0"
 description = "Distributed inter-agent message bus using Telegram"
 readme = "README.md"
 license = "MIT"
@@ -19,6 +19,7 @@ dependencies = [
     "pyyaml>=6.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
+    "pyte>=0.8.2",
 ]
 
 [project.optional-dependencies]

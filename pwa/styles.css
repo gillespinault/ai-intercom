@@ -155,11 +155,19 @@ body::before {
 /* Header stats */
 .header-stats {
   display: flex;
-  gap: var(--sp-3);
-  font-size: 11px;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.7rem;
   color: var(--text-muted);
   font-weight: 500;
   letter-spacing: 0.02em;
+  opacity: 0.85;
+}
+
+#stat-badges {
+  display: flex;
+  gap: var(--sp-3);
+  font-size: 11px;
 }
 
 .stat-badge {
@@ -177,6 +185,79 @@ body::before {
 .stat-dot.working  { background: var(--teal); }
 .stat-dot.thinking { background: var(--yellow); }
 .stat-dot.waiting  { background: var(--coral); }
+
+/* --- Usage stats bar --- */
+.usage-bar {
+  position: relative;
+  width: 80px;
+  height: 6px;
+  background: var(--bg-deep);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--green);
+  transition: width 0.6s ease, background-color 0.6s ease;
+  width: 0%;
+}
+
+.usage-bar-fill.warn { background: var(--yellow); }
+.usage-bar-fill.crit { background: var(--red); }
+
+.usage-bar-label {
+  position: absolute;
+  top: -14px;
+  right: 0;
+  font-size: 0.6rem;
+  color: var(--text-dim);
+}
+
+.usage-reset {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.usage-weekly {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* --- Context bar (per-session tile) --- */
+.context-bar {
+  margin-top: 0.4rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.context-bar-track {
+  flex: 1;
+  height: 4px;
+  background: var(--bg-deep);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.context-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--green);
+  transition: width 0.6s ease, background-color 0.6s ease;
+  width: 0%;
+}
+
+.context-bar-fill.warn { background: var(--yellow); }
+.context-bar-fill.crit { background: var(--red); }
+
+.context-bar-label {
+  font-size: 0.6rem;
+  color: var(--text-dim);
+  min-width: 2.2em;
+  text-align: right;
+}
 
 /* Connection dot */
 .conn-dot {
@@ -313,6 +394,21 @@ body::before {
   gap: var(--sp-4);
   align-content: start;
   animation: view-enter var(--dur-slow) var(--ease-out) both;
+}
+
+/* Tile groups (group by project/machine) */
+.tile-group {
+  margin-bottom: var(--sp-4);
+}
+.tile-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--teal);
+  padding: var(--sp-1) var(--sp-2);
+  margin-bottom: var(--sp-2);
+  border-bottom: 1px solid rgba(255,255,255,0.08);
 }
 
 /* Cap tile max-width when very few tiles */
@@ -1355,6 +1451,23 @@ body::before {
   color: var(--text-dim);
 }
 
+/* Select dropdown */
+.prefs-select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: var(--font);
+  cursor: pointer;
+  min-width: 90px;
+}
+.prefs-select:focus {
+  outline: none;
+  border-color: var(--teal);
+}
+
 /* Toggle switch */
 .toggle {
   position: relative;
@@ -1621,3 +1734,31 @@ body::before {
 [data-theme="eink"] .tile-state-label.working  { color: #aaa; }
 [data-theme="eink"] .tile-state-label.thinking { color: #666; }
 [data-theme="eink"] .btn-always { background: #fff; color: #333; border: 1px solid #666; }
+
+/* ---- Permission Tiles ---- */
+
+.tile--permission {
+  border-color: #f59e0b;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(245, 158, 11, 0.04));
+  animation: permission-pulse 2s ease-in-out infinite;
+}
+
+@keyframes permission-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.3); }
+  50% { box-shadow: 0 0 12px 4px rgba(245, 158, 11, 0.15); }
+}
+
+[data-theme="eink"] .tile--permission {
+  border-color: #333;
+  background: #f0f0f0;
+  animation: none;
+}
+
+.badge-tool--permission {
+  background: #f59e0b;
+  color: #000;
+}
+
+.stat-dot.permission {
+  background: #f59e0b;
+}

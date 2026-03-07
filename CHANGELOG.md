@@ -2,6 +2,27 @@
 
 All notable changes to AI-Intercom are documented here.
 
+## [0.7.0] - 2026-03-06
+
+### Added
+- **TTS Narrator** -- Voice announcements of agent progress in the Attention Hub PWA. Agents call `intercom_announce()` to narrate milestones, difficulties, or explain their work. The PWA synthesizes speech via XTTS on Jetson Thor and plays it automatically.
+  - `TTSAnnounce` and `TTSCategory` models (milestone, difficulty, didactic, attention, permission, lifecycle, summary)
+  - `POST /api/attention/announce` -- Broadcast TTS announcements via WebSocket (`tts_announce` event)
+  - `POST /api/attention/tts` -- Hub proxy to XTTS service with 2s rate limiting
+  - `HubClient.push_announce()` -- Daemon-to-hub announce method
+  - `intercom_announce` MCP tool -- 13th MCP tool for agents to narrate progress
+  - `pwa/tts.js` -- Full TTS narrator module with queue, dedup, cooldown, priority sorting, PCM playback (Int16→Float32, 24kHz)
+  - PWA voice preferences panel: per-category toggles, volume slider, verbosity level (minimal/informatif), cooldown setting
+- **pyte terminal emulator** -- `claude-pty` now uses the `pyte` library for robust VT100 terminal emulation instead of regex-based ANSI stripping. Properly handles DEC private modes, cursor positioning, and synchronized output markers.
+
+### Changed
+- **Terminal-only prompt detection** -- Removed `notification_data` pipeline entirely. The terminal is now the sole source of truth for prompt type. Hooks only track activity timing (WORKING/THINKING/WAITING state), and terminal capture determines prompt content when WAITING.
+- **Prompt parser** -- `strip_ansi()` now handles DEC private mode sequences (`\x1b[?...`) and synchronized update blocks (`\x1b[?2026h/l`).
+- MCP tools count: 12 → 13 (added `intercom_announce`).
+
+### Fixed
+- **TTS proxy URL duplication** -- Hub proxy now checks if `/v1/tts` is already in the configured `tts_url` before appending, preventing double-path 502 errors.
+
 ## [0.6.0] - 2026-03-04
 
 ### Added

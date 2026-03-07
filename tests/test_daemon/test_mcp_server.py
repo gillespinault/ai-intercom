@@ -190,3 +190,22 @@ async def test_check_inbox_no_path(chat_tools):
     # _inbox_path is None by default
     result = await tools.check_inbox()
     assert result["count"] == 0
+
+
+async def test_announce(tools):
+    """intercom_announce should call push_announce on hub_client."""
+    tools.hub_client.push_announce = AsyncMock(return_value={"status": "ok"})
+    tools._session_id = "sess-123"
+    result = await tools.announce(
+        message="Phase 2 terminee",
+        category="milestone",
+        priority="normal",
+    )
+    assert result["status"] == "ok"
+    tools.hub_client.push_announce.assert_called_once_with(
+        session_id="sess-123",
+        project="infra",
+        message="Phase 2 terminee",
+        category="milestone",
+        priority="normal",
+    )

@@ -1,30 +1,30 @@
-const CACHE_NAME = 'attention-hub-v4';
-const ASSETS = [
-  '/attention',
-  '/attention/styles.css',
-  '/attention/terminal.js',
-  '/attention/app.js',
-];
+const CACHE_NAME = 'attention-hub-v6';
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS))
-  );
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((names) =>
-      Promise.all(names.filter((n) => n !== CACHE_NAME).map((n) => caches.delete(n)))
+      Promise.all(names.map((n) => caches.delete(n)))
     )
   );
   self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {
+  // Network-first: always fetch fresh, cache as fallback for offline
   event.respondWith(
-    caches.match(event.request).then((r) => r || fetch(event.request))
+    fetch(event.request)
+      .then((response) => {
+        if (response.ok && event.request.method === 'GET') {
+          var clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
 

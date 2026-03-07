@@ -57,29 +57,28 @@ The attention system detects when Claude Code sessions need human input:
 Claude Code hooks (SessionStart/Stop/Notification/UserPromptSubmit)
   → cc-heartbeat.sh writes JSON to /tmp/cc-sessions/<PID>.json
     → AttentionMonitor polls heartbeat files every 3s
-      → Captures tmux terminal via `tmux capture-pane`
-        → prompt_parser.py detects prompt type (permission/question/text_input)
-          → Pushes AttentionSession to Hub API
-            → Hub broadcasts via WebSocket to PWA + Telegram notifications
+      → idle_seconds from last_tool_time → state (WORKING/THINKING/WAITING)
+      → When WAITING: capture terminal (PTY via pyte) → parse_terminal_output()
+      → Pushes AttentionSession to Hub API
+        → Hub broadcasts via WebSocket to PWA + Telegram notifications
 ```
 
-**Prompt parser architecture** (`src/daemon/prompt_parser.py`):
-- Priority cascade: permission → select_input → question → text_input
-- SelectInput detection limited to bottom 30 lines (avoids scroll buffer history)
-- Contiguous block extraction ensures only adjacent numbered options are collected
-- Handles `\xa0` non-breaking spaces and ccusage statusline decorators
-- `_prompt_changed()` compares question, command_preview, AND choices to detect updates
+**Prompt detection architecture** (see `docs/PROMPT-DETECTION-STATUS.md`):
+- Terminal is the **sole source of truth** for prompt type
+- Hooks only track activity timing (WORKING/THINKING/WAITING state)
+- When WAITING: capture terminal → `parse_terminal_output()` → that's the prompt
+- No `notification_data` in heartbeats; no hook-based prompt type inference
 
 **Heartbeat script** (`scripts/cc-heartbeat.sh`):
-- `detect_project()` walks up from CWD to find CLAUDE.md or .git
+- `detect_project()`: first checks `projects/*/` convention, then CLAUDE.md, then .git
 - Special case: `~/.claude/skills/<name>/` → `skill:<name>`
-- Actions: start, stop, working, waiting, notification
+- Actions: start, stop, working, activity
+- `activity` action: always preserves `last_tool_time` (only touches file mtime for abandon detection)
 
 **Abandon threshold** (`attention_monitor.py`):
-- Sessions idle > `_ABANDON_THRESHOLD` (1 hour) are considered abandoned
-- Daemon stops pushing updates → hub's `STALE_TIMEOUT` (5 min) cleans them up
+- Sessions abandoned when BOTH `last_tool_time` AND heartbeat file mtime are older than `_ABANDON_THRESHOLD` (1 hour)
 - Non-destructive: if the user returns and types, the session reappears automatically
-- Prevents ghost sessions from forgotten tmux windows cluttering the dashboard
+- Zombie process detection via `/proc/{pid}/status` (Z state check)
 
 **PWA Control Room** (`pwa/`):
 - Tile grid layout with session cards showing state/prompt/actions
@@ -87,6 +86,39 @@ Claude Code hooks (SessionStart/Stop/Notification/UserPromptSubmit)
 - SKILL/SUB badges for background sessions (dimmed opacity)
 - Dismiss button to hide resolved tiles
 - WebSocket real-time updates from hub
+- TTS narrator module (`pwa/tts.js`) for voice announcements via XTTS
+
+## TTS Narrator — ALWAYS active
+
+**At the start of every multi-step task**, check presence and user settings:
+
+```bash
+curl -s http://localhost:7700/api/attention/presence
+```
+
+Returns: `{"connected_clients": N, "tts": {"enabled": bool, "categories": {...}}}`
+
+**Narrate only if** `connected_clients > 0` AND `tts.enabled == true`. Only announce categories where `tts.categories.<name>` is `true`.
+
+- **milestone**: phase completed, tests passing, deployment done (1-2 per phase)
+- **difficulty**: 3rd retry, unexpected error, blocked on something
+- **didactic**: explain what you're doing and why (at major transitions)
+
+**Rules:**
+- French, conversational tone, max 200 chars
+- Announce at EVERY significant step — not just start/end
+- 1-2 announcements per plan phase minimum
+- Don't wait until the end to announce — narrate as you go
+- **Skip categories the user disabled** in PWA settings
+
+**Examples:**
+```python
+intercom_announce(message="Je commence par ajouter l'endpoint de presence au hub", category="didactic")
+intercom_announce(message="Tests OK, 2 sur 2. Je passe au deploiement", category="milestone")
+intercom_announce(message="Erreur 502, le hostname ne resout pas dans Docker", category="difficulty")
+```
+
+If `connected_clients == 0` or `tts.enabled == false`, skip narration silently.
 
 ## Commands
 

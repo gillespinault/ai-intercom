@@ -21,12 +21,14 @@ import os
 import subprocess
 from datetime import datetime, timezone
 
-from src.daemon.prompt_parser import parse_notification_data, parse_terminal_output
+from src.daemon.prompt_parser import parse_terminal_output
+from src.daemon.usage_collector import UsageCollector
 from src.shared.models import (
     AttentionHeartbeat,
     AttentionSession,
     AttentionState,
     DetectedPrompt,
+    PromptType,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,6 +83,15 @@ class AttentionMonitor:
         self._last_push: dict[str, datetime] = {}  # last time an event was pushed per session
         self._running = False
         self._stop_event: asyncio.Event = asyncio.Event()
+        self._usage_collector: UsageCollector | None = None
+
+    def set_usage_collector(self, collector: UsageCollector) -> None:
+        """Attach a UsageCollector for stats gathering during poll cycles."""
+        self._usage_collector = collector
+
+    def get_sessions(self) -> list[AttentionSession]:
+        """Return all currently tracked sessions."""
+        return list(self._tracked.values())
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -143,12 +154,20 @@ class AttentionMonitor:
 
     @staticmethod
     def _process_alive(pid: int) -> bool:
-        """Return ``True`` if a process with *pid* exists."""
+        """Return ``True`` if *pid* is a live (non-zombie) process."""
         try:
             os.kill(pid, 0)
-            return True
         except (OSError, ProcessLookupError):
             return False
+        # Check for zombie status — os.kill succeeds on zombies
+        try:
+            with open(f"/proc/{pid}/status") as f:
+                for line in f:
+                    if line.startswith("State:"):
+                        return "Z" not in line  # Z = zombie
+        except OSError:
+            pass
+        return True
 
     @staticmethod
     def _capture_terminal(tmux_session: str) -> str | None:
@@ -169,6 +188,19 @@ class AttentionMonitor:
                 return result.stdout
         except (subprocess.SubprocessError, FileNotFoundError) as exc:
             logger.debug("tmux capture failed for %s: %s", tmux_session, exc)
+        return None
+
+    @staticmethod
+    def _capture_terminal_pty(pty_port: int) -> str | None:
+        """Capture terminal via the claude-pty HTTP relay."""
+        import httpx
+
+        try:
+            resp = httpx.get(f"http://127.0.0.1:{pty_port}/capture", timeout=2)
+            if resp.status_code == 200:
+                return resp.json().get("content", "")
+        except Exception as exc:
+            logger.debug("PTY capture failed (port %d): %s", pty_port, exc)
         return None
 
     @staticmethod
@@ -223,6 +255,22 @@ class AttentionMonitor:
             logger.debug("tmux send-keys failed for %s: %s", tmux_session, exc)
             return False
 
+    @staticmethod
+    def _inject_response_pty(pty_port: int, keys: str) -> bool:
+        """Send keystrokes via the claude-pty HTTP relay."""
+        import httpx
+
+        try:
+            resp = httpx.post(
+                f"http://127.0.0.1:{pty_port}/inject",
+                json={"keys": keys},
+                timeout=5,
+            )
+            return resp.status_code == 200
+        except Exception as exc:
+            logger.debug("PTY inject failed (port %d): %s", pty_port, exc)
+            return False
+
     # ------------------------------------------------------------------
     # Poll cycle
     # ------------------------------------------------------------------
@@ -266,44 +314,58 @@ class AttentionMonitor:
 
             # Skip abandoned sessions — idle too long, likely a forgotten
             # tmux.  Stop pushing so the hub expires it after 5 min.
+            # But check the heartbeat *file* mtime too: hooks like
+            # "notification" preserve old last_tool_time but still touch
+            # the file.  If the file is recent, the session is alive.
             if idle_seconds >= _ABANDON_THRESHOLD:
-                if hb.session_id in self._tracked:
-                    logger.info(
-                        "Session %s (%s) abandoned (idle %.0fs), stopping updates",
-                        hb.session_id[:8], hb.project, idle_seconds,
+                hb_path = os.path.join(self._sessions_dir, f"{hb.pid}.json")
+                try:
+                    file_mtime = datetime.fromtimestamp(
+                        os.path.getmtime(hb_path), tz=timezone.utc
                     )
-                    ended = self._tracked.pop(hb.session_id)
-                    self._last_prompt.pop(hb.session_id, None)
-                    self._last_push.pop(hb.session_id, None)
-                    ended.state = AttentionState.ENDED
-                    ended.state_since = now.isoformat()
-                    events.append({"type": "session_ended", "session": ended})
-                continue
+                    file_age = (now - file_mtime).total_seconds()
+                except OSError:
+                    file_age = idle_seconds
+                if file_age >= _ABANDON_THRESHOLD:
+                    if hb.session_id in self._tracked:
+                        logger.info(
+                            "Session %s (%s) abandoned (idle %.0fs, file %.0fs), stopping updates",
+                            hb.session_id[:8], hb.project, idle_seconds, file_age,
+                        )
+                        ended = self._tracked.pop(hb.session_id)
+                        self._last_prompt.pop(hb.session_id, None)
+                        self._last_push.pop(hb.session_id, None)
+                        ended.state = AttentionState.ENDED
+                        ended.state_since = now.isoformat()
+                        events.append({"type": "session_ended", "session": ended})
+                    continue
 
             state = self._determine_state(idle_seconds)
 
-            # If waiting, try to capture prompt details.
-            # Priority: tmux terminal capture > notification_data fallback > cached prompt (B2).
+            # Determine prompt info.
+            #
+            # The terminal is the sole source of truth for prompt type.
+            # Hooks only track activity timing (WORKING/THINKING/WAITING).
+            # When WAITING, we capture the terminal and parse it — that's
+            # what the user actually sees.
             prompt = None
             if state == AttentionState.WAITING:
-                if hb.tmux_session:
+                raw_output = None
+                if hb.pty_port:
+                    raw_output = self._capture_terminal_pty(hb.pty_port)
+                if raw_output is None and hb.tmux_session:
                     raw_output = self._capture_terminal(hb.tmux_session)
-                    if raw_output:
-                        prompt = parse_terminal_output(raw_output)
-                if prompt is None and hb.notification_data:
-                    prompt = parse_notification_data(hb.notification_data)
-                # Cache the prompt for B2 race condition protection
+
+                if raw_output:
+                    prompt = parse_terminal_output(raw_output)
+
                 if prompt is not None:
                     self._last_prompt[hb.session_id] = prompt
             elif state == AttentionState.THINKING:
                 # Brief idle (5-15s): keep cached prompt (B2 race protection).
-                # Hook heartbeat can briefly reset idle_seconds even though
-                # the terminal still shows a prompt.
                 prompt = self._last_prompt.get(hb.session_id)
             else:
-                # WORKING: agent is actively making tool calls — old prompt
-                # is stale.  Clear the cache so the UI doesn't show
-                # phantom yes/no buttons.
+                # WORKING: clear stale prompt cache.
                 prompt = None
                 self._last_prompt.pop(hb.session_id, None)
 
@@ -321,6 +383,7 @@ class AttentionMonitor:
                 idle_seconds=int(idle_seconds),
                 prompt=prompt,
                 tmux_session=hb.tmux_session,
+                pty_port=hb.pty_port,
             )
 
             # Compare with tracked state.
@@ -329,6 +392,10 @@ class AttentionMonitor:
                 events.append({"type": "new_session", "session": session})
                 self._last_push[hb.session_id] = now
             elif prev.state != session.state:
+                events.append({"type": "state_changed", "session": session})
+                self._last_push[hb.session_id] = now
+            elif prev.project != session.project:
+                # Project name changed (e.g. heartbeat corrected) — push update
                 events.append({"type": "state_changed", "session": session})
                 self._last_push[hb.session_id] = now
             elif self._prompt_changed(prev.prompt, session.prompt):
@@ -366,6 +433,28 @@ class AttentionMonitor:
                     await self._hub_client.push_attention_event(event)  # type: ignore[union-attr]
                 except Exception as exc:
                     logger.warning("Failed to push event to hub: %s", exc)
+
+        # Collect and push usage stats (context % per session)
+        if self._hub_client is not None and self._usage_collector is not None:
+            session_contexts: dict = {}
+            for hb in heartbeats:
+                if hb.session_id not in self._tracked:
+                    continue
+                transcript_path = hb.transcript_path or None
+                if transcript_path:
+                    ctx = self._usage_collector.get_context_percent(transcript_path)
+                    if ctx:
+                        session_contexts[hb.session_id] = ctx
+            has_block = (
+                self._usage_collector._latest is not None
+                and self._usage_collector._latest.block.is_active
+            )
+            if session_contexts or has_block:
+                payload = self._usage_collector.build_payload(session_contexts)
+                try:
+                    await self._hub_client.push_usage_stats(payload.model_dump())  # type: ignore[union-attr]
+                except Exception as exc:
+                    logger.debug("Failed to push usage stats: %s", exc)
 
         return events
 

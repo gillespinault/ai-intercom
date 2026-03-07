@@ -31,6 +31,7 @@ def create_app(machine_id: str, token: str) -> FastAPI:
     app.state.active_missions: dict[str, dict] = {}
     app.state.launcher = None  # Set by daemon main
     app.state.active_sessions: dict[str, dict] = {}
+    app.state.hub_client = None
 
     @app.get("/health")
     async def health():
@@ -283,24 +284,37 @@ def create_app(machine_id: str, token: str) -> FastAPI:
 
     @app.post("/api/attention/respond")
     async def attention_respond(request: Request):
-        """Inject a response into a Claude Code session via tmux send-keys."""
+        """Inject a response into a Claude Code session.
+
+        Supports two backends:
+        - PTY relay (claude-pty): via ``pty_port`` field — preferred, zero tmux dependency
+        - tmux send-keys: via ``tmux_session`` field — legacy fallback
+        """
         data = await request.json()
+        pty_port = data.get("pty_port")
         tmux_session = data.get("tmux_session", "")
         keys = data.get("keys", "")
-        if not tmux_session or not keys:
-            logger.warning("Respond rejected: missing tmux_session=%r or keys=%r", tmux_session, keys)
-            return Response(status_code=400, content="tmux_session and keys required")
+
+        if not keys:
+            return Response(status_code=400, content="keys required")
+        if not pty_port and not tmux_session:
+            return Response(status_code=400, content="pty_port or tmux_session required")
 
         monitor = getattr(app.state, "attention_monitor", None)
         if not monitor:
-            logger.warning("Respond rejected: attention monitor not running")
             return Response(status_code=503, content="Attention monitor not running")
 
-        logger.info("Injecting response into tmux=%s keys=%r", tmux_session, keys)
-        success = monitor._inject_response(tmux_session, keys)
+        # Prefer PTY relay over tmux
+        if pty_port:
+            logger.info("Injecting response via PTY port=%d keys=%r", pty_port, keys)
+            success = monitor._inject_response_pty(pty_port, keys)
+        else:
+            logger.info("Injecting response via tmux=%s keys=%r", tmux_session, keys)
+            success = monitor._inject_response(tmux_session, keys)
+
         if not success:
-            logger.warning("tmux send-keys failed for session=%s", tmux_session)
-        return {"status": "sent" if success else "failed", "tmux_session": tmux_session}
+            logger.warning("Response injection failed (pty_port=%s, tmux=%s)", pty_port, tmux_session)
+        return {"status": "sent" if success else "failed"}
 
     @app.get("/api/attention/terminal/{tmux_session:path}")
     async def attention_terminal(tmux_session: str):
@@ -313,5 +327,66 @@ def create_app(machine_id: str, token: str) -> FastAPI:
         if content is None:
             return Response(status_code=404, content="tmux session not found")
         return {"tmux_session": tmux_session, "content": content}
+
+    @app.get("/api/attention/terminal-pty/{pty_port}")
+    async def attention_terminal_pty(pty_port: int):
+        """Capture terminal content via claude-pty HTTP relay."""
+        monitor = getattr(app.state, "attention_monitor", None)
+        if not monitor:
+            return Response(status_code=503, content="Attention monitor not running")
+
+        content = monitor._capture_terminal_pty(pty_port)
+        if content is None:
+            return Response(status_code=404, content="PTY relay not reachable")
+        return {"pty_port": pty_port, "content": content}
+
+    # --- Permission hook endpoints ---
+
+    @app.post("/hook/permission")
+    async def hook_permission(request: Request):
+        """Receive PermissionRequest hook from Claude Code.
+
+        Non-blocking: forwards to hub for PWA display, returns {} immediately
+        so Claude Code shows the terminal prompt without delay.
+        """
+        from src.shared.models import PermissionRequest
+
+        data = await request.json()
+        sid = data.get("session_id", "")
+
+        # Resolve project: active_sessions first, then attention_monitor heartbeats
+        session_info = app.state.active_sessions.get(sid, {})
+        project = session_info.get("project", "")
+        if not project:
+            monitor = getattr(app.state, "attention_monitor", None)
+            if monitor:
+                for s in monitor.get_sessions():
+                    if s.session_id == sid:
+                        project = s.project
+                        break
+
+        req = PermissionRequest(
+            session_id=sid,
+            tool_name=data.get("tool_name", ""),
+            tool_input=data.get("tool_input", {}),
+            permission_suggestions=data.get("permission_suggestions", []),
+            machine=machine_id,
+            project=project,
+        )
+
+        hub = getattr(app.state, "hub_client", None)
+        if not hub:
+            logger.warning("Permission hook: no hub_client, falling back to terminal")
+            return {}
+
+        # Non-blocking: forward to hub for PWA display, then return {}
+        # immediately so Claude Code shows the terminal prompt without delay.
+        # The PWA can still respond via PTY/tmux injection.
+        try:
+            await hub.push_permission_request(req)
+        except Exception as e:
+            logger.error("Failed to forward permission to hub: %s", e)
+
+        return {}
 
     return app

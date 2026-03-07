@@ -143,7 +143,7 @@ class DetectedPrompt(BaseModel):
 
 
 class AttentionHeartbeat(BaseModel):
-    """Written by PostToolUse hook to /tmp/cc-sessions/{pid}."""
+    """Written by Claude Code hooks to /tmp/cc-sessions/{pid}."""
     pid: int
     session_id: str
     session_name: str = ""
@@ -152,8 +152,9 @@ class AttentionHeartbeat(BaseModel):
     last_tool: str = ""
     last_tool_time: str = ""
     tmux_session: str = ""
+    pty_port: int | None = None
     rc_url: str | None = None
-    notification_data: str = ""
+    transcript_path: str = ""
 
 
 class AttentionSession(BaseModel):
@@ -172,6 +173,7 @@ class AttentionSession(BaseModel):
     idle_seconds: int = 0
     prompt: DetectedPrompt | None = None
     tmux_session: str = ""
+    pty_port: int | None = None
 
 
 class AttentionEvent(BaseModel):
@@ -180,3 +182,103 @@ class AttentionEvent(BaseModel):
     session: AttentionSession | None = None
     sessions: list[AttentionSession] | None = None
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+# ---------------------------------------------------------------------------
+# TTS Narrator models
+# ---------------------------------------------------------------------------
+
+
+class TTSCategory(StrEnum):
+    ATTENTION = "attention"
+    PERMISSION = "permission"
+    MILESTONE = "milestone"
+    DIFFICULTY = "difficulty"
+    LIFECYCLE = "lifecycle"
+    DIDACTIC = "didactic"
+    SUMMARY = "summary"
+
+
+class TTSAnnounce(BaseModel):
+    """A TTS announcement to be narrated aloud."""
+    session_id: str
+    project: str
+    message: str
+    category: TTSCategory = TTSCategory.MILESTONE
+    priority: str = "normal"
+
+
+# ---------------------------------------------------------------------------
+# Usage stats models
+# ---------------------------------------------------------------------------
+
+
+class BlockStats(BaseModel):
+    """Current billing block progress."""
+    start_time: str = ""
+    end_time: str = ""
+    elapsed_pct: float = 0.0
+    remaining_minutes: int = 0
+    reset_time: str = ""
+    is_active: bool = False
+
+
+class WeeklyStats(BaseModel):
+    """Weekly token usage summary."""
+    total_tokens: int = 0
+    display: str = "0"
+
+
+class SessionContextStats(BaseModel):
+    """Context window usage for a single session."""
+    context_percent: float = 0.0
+    context_tokens: int = 0
+
+
+class UsageStatsPayload(BaseModel):
+    """Full usage stats payload pushed from daemon to hub."""
+    block: BlockStats = Field(default_factory=BlockStats)
+    weekly: WeeklyStats = Field(default_factory=WeeklyStats)
+    sessions: dict[str, SessionContextStats] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Permission approval models
+# ---------------------------------------------------------------------------
+
+
+class PermissionRequest(BaseModel):
+    """A permission request received from Claude Code's PermissionRequest hook."""
+    request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    session_id: str
+    tool_name: str
+    tool_input: dict = Field(default_factory=dict)
+    permission_suggestions: list[dict] = Field(default_factory=list)
+    machine: str = ""
+    project: str = ""
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class PermissionDecision(BaseModel):
+    """A decision for a pending permission request."""
+    behavior: str = ""  # "allow" or "deny"
+    reason: str = ""
+
+    def to_hook_response(self) -> dict:
+        """Format as Claude Code hook response JSON."""
+        if not self.behavior:
+            return {}
+        decision: dict = {"behavior": self.behavior}
+        if self.reason:
+            decision["reason"] = self.reason
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": decision,
+            }
+        }
+
+    @classmethod
+    def fallback(cls) -> "PermissionDecision":
+        """Create a fallback decision (empty = show terminal dialog)."""
+        return cls()

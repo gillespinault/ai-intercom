@@ -325,3 +325,46 @@ async def test_session_status():
         await client.aclose()
         if inbox_file and os.path.exists(inbox_file):
             os.unlink(inbox_file)
+
+
+class TestPermissionHook:
+    async def test_hook_permission_resolve_endpoint(self, client, app):
+        """POST /api/attention/permission/resolve should resolve a pending future."""
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        app.state.pending_permission_futures = {"req-123": future}
+
+        resp = await client.post("/api/attention/permission/resolve", json={
+            "request_id": "req-123",
+            "decision": "allow",
+            "reason": "",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "resolved"
+        assert future.done()
+        assert future.result()["behavior"] == "allow"
+
+    async def test_hook_permission_resolve_not_found(self, client, app):
+        """Resolve for unknown request_id returns not_found."""
+        app.state.pending_permission_futures = {}
+        resp = await client.post("/api/attention/permission/resolve", json={
+            "request_id": "nonexistent",
+            "decision": "allow",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "not_found"
+
+    async def test_hook_permission_no_hub_client_returns_fallback(self, client, app):
+        """Without hub_client, /hook/permission returns empty (fallback)."""
+        app.state.hub_client = None
+        app.state.pending_permission_futures = {}
+
+        resp = await client.post("/hook/permission", json={
+            "session_id": "abc123",
+            "tool_name": "Bash",
+            "tool_input": {"command": "docker ps"},
+        })
+        assert resp.status_code == 200
+        assert resp.json() == {}

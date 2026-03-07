@@ -564,8 +564,8 @@ class TestStaleSessionCleanup:
 class TestNotificationPrefs:
     """Tests for Telegram notification preference filtering."""
 
-    def test_default_prefs_all_enabled(self):
-        store = AttentionStore()
+    def test_default_prefs_all_enabled(self, tmp_path):
+        store = AttentionStore(prefs_path=str(tmp_path / "prefs.json"))
         prefs = store.get_notification_prefs()
         assert prefs == {"permission": True, "question": True, "text_input": True}
 
@@ -653,3 +653,79 @@ class TestNotificationPrefsFiltering:
         await asyncio.sleep(0)
 
         callback.assert_called_once()
+
+
+from src.shared.models import PermissionRequest, PermissionDecision
+
+
+class TestPendingPermissions:
+    def test_add_pending_permission(self):
+        store = AttentionStore()
+        req = PermissionRequest(
+            session_id="sess-1",
+            tool_name="Bash",
+            tool_input={"command": "docker ps"},
+            machine="laptop",
+        )
+        store.add_pending_permission(req)
+        assert store.get_pending_permission(req.request_id) is not None
+
+    def test_resolve_permission_allow(self):
+        store = AttentionStore()
+        req = PermissionRequest(
+            session_id="sess-1",
+            tool_name="Bash",
+            tool_input={"command": "docker ps"},
+            machine="laptop",
+        )
+        store.add_pending_permission(req)
+        decision = PermissionDecision(behavior="allow")
+        store.resolve_permission(req.request_id, decision)
+        assert store.get_pending_permission(req.request_id) is None
+
+    def test_resolve_triggers_callback(self):
+        store = AttentionStore()
+        req = PermissionRequest(
+            session_id="sess-1",
+            tool_name="Bash",
+            tool_input={"command": "docker ps"},
+            machine="laptop",
+        )
+        store.add_pending_permission(req)
+
+        resolved = None
+        def on_resolve(request_id, decision):
+            nonlocal resolved
+            resolved = (request_id, decision)
+
+        store.set_on_permission_resolved(on_resolve)
+        decision = PermissionDecision(behavior="deny", reason="nope")
+        store.resolve_permission(req.request_id, decision)
+        assert resolved is not None
+        assert resolved[1].behavior == "deny"
+
+    def test_get_pending_permission_not_found(self):
+        store = AttentionStore()
+        assert store.get_pending_permission("nonexistent") is None
+
+    def test_list_pending_permissions(self):
+        store = AttentionStore()
+        req1 = PermissionRequest(session_id="s1", tool_name="Bash", tool_input={}, machine="m1")
+        req2 = PermissionRequest(session_id="s2", tool_name="Read", tool_input={}, machine="m1")
+        store.add_pending_permission(req1)
+        store.add_pending_permission(req2)
+        assert len(store.list_pending_permissions()) == 2
+
+    def test_expire_old_permissions(self):
+        store = AttentionStore()
+        req = PermissionRequest(
+            session_id="sess-1",
+            tool_name="Bash",
+            tool_input={},
+            machine="laptop",
+            created_at="2020-01-01T00:00:00+00:00",
+        )
+        store.add_pending_permission(req)
+        expired = store.expire_permissions(max_age_seconds=60)
+        assert len(expired) == 1
+        assert store.get_pending_permission(req.request_id) is None

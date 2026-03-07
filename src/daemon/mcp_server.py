@@ -128,6 +128,21 @@ class IntercomTools:
     ) -> dict:
         return await self.hub_client.trigger_upgrade(target=target, version=version)
 
+    async def announce(
+        self,
+        message: str,
+        category: str = "milestone",
+        priority: str = "normal",
+    ) -> dict:
+        """Push a TTS announcement to the hub for voice narration."""
+        return await self.hub_client.push_announce(
+            session_id=self._session_id or "",
+            project=self.current_project,
+            message=message,
+            category=category,
+            priority=priority,
+        )
+
     async def check_inbox(self) -> dict:
         if not self._inbox_path:
             return {"messages": [], "count": 0}
@@ -334,6 +349,28 @@ def create_mcp_server(tools: IntercomTools) -> FastMCP:
             version: Target version (empty = latest).
         """
         return await tools.upgrade_network(target=target, version=version)
+
+    @mcp.tool()
+    async def intercom_announce(
+        message: str,
+        category: str = "milestone",
+        priority: str = "normal",
+    ) -> dict:
+        """Announce progress via TTS voice narration in the Attention Hub PWA.
+
+        Use this to narrate major milestones, difficulties, or explain what
+        you're working on. The message will be synthesized as speech and
+        played in the user's browser.
+
+        Args:
+            message: The announcement text (French, max 200 chars, conversational).
+            category: "milestone" (plan phase done), "difficulty" (blocked/retrying),
+                      or "didactic" (explain current work).
+            priority: "low", "normal", or "high".
+        """
+        return await tools.announce(
+            message=message, category=category, priority=priority
+        )
 
     @mcp.tool()
     async def intercom_check_inbox() -> dict:

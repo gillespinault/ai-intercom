@@ -210,6 +210,47 @@ class HubClient:
         }
         return await self._post("/api/attention/event", data)
 
+    async def push_usage_stats(self, stats: dict) -> dict:
+        """Push usage stats to the hub."""
+        return await self._post("/api/attention/stats", {
+            "machine_id": self.machine_id,
+            "stats": stats,
+        })
+
+    async def push_announce(
+        self,
+        session_id: str,
+        project: str,
+        message: str,
+        category: str = "milestone",
+        priority: str = "normal",
+    ) -> dict:
+        """Push a TTS announcement to the hub for PWA broadcast."""
+        return await self._post("/api/attention/announce", {
+            "machine_id": self.machine_id,
+            "session_id": session_id,
+            "project": project,
+            "message": message,
+            "category": category,
+            "priority": priority,
+        })
+
+    async def push_permission_request(self, request) -> dict:
+        """Forward a permission request to the hub."""
+        return await self._post("/api/attention/permission", {
+            "machine": self.machine_id,
+            "session_id": request.session_id,
+            "tool_name": request.tool_name,
+            "tool_input": request.tool_input,
+            "permission_suggestions": request.permission_suggestions,
+            "request_id": request.request_id,
+            "project": request.project,
+        })
+
+    async def cancel_permission_request(self, request_id: str) -> dict:
+        """Tell the hub to remove a timed-out permission request."""
+        return await self._post(f"/api/attention/permission/{request_id}/cancel", {})
+
     async def trigger_upgrade(
         self, target: str = "all", version: str = ""
     ) -> dict:

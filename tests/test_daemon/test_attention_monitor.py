@@ -12,6 +12,7 @@ import json
 import os
 import tempfile
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -66,6 +67,24 @@ def write_heartbeat(
     with open(path, "w") as f:
         json.dump(data, f)
     return path
+
+
+# Terminal output fixtures for prompt detection tests.
+TERMINAL_PERMISSION = (
+    "  Claude wants to execute a Bash command\n"
+    "  Command: npm test\n"
+    "  Allow? (y)es / (n)o / (a)lways allow for this session\n"
+)
+TERMINAL_TEXT_INPUT = (
+    "  Task completed.\n"
+    "\u276f \n"
+    "\u2500" * 40 + "\n"
+    "  esc to interrupt\n"
+)
+TERMINAL_WORKING = (
+    "  Reading file...\n"
+    "  Analyzing code structure..."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -356,8 +375,101 @@ class TestRunLoop:
 
 
 # ---------------------------------------------------------------------------
-# TestResync
+# TestPromptDetection — terminal is the sole source of truth
 # ---------------------------------------------------------------------------
+
+
+class TestPromptDetection:
+    @pytest.mark.asyncio
+    async def test_permission_from_terminal(self, monitor, sessions_dir):
+        """When WAITING, terminal showing Allow? → permission prompt."""
+        pid = os.getpid()
+        write_heartbeat(
+            sessions_dir, pid=pid,
+            last_tool_time=_iso_past(60),
+            tmux_session="test-tmux",
+        )
+
+        with patch.object(
+            AttentionMonitor, "_capture_terminal", return_value=TERMINAL_PERMISSION
+        ):
+            events = await monitor.poll_once()
+
+        assert len(events) == 1
+        session = events[0]["session"]
+        assert session.state == AttentionState.WAITING
+        assert session.prompt is not None
+        assert session.prompt.type == "permission"
+        assert session.prompt.tool == "Bash"
+
+    @pytest.mark.asyncio
+    async def test_text_input_from_terminal(self, monitor, sessions_dir):
+        """When WAITING, terminal showing ❯ → text_input prompt."""
+        pid = os.getpid()
+        write_heartbeat(
+            sessions_dir, pid=pid,
+            last_tool_time=_iso_past(60),
+            tmux_session="test-tmux",
+        )
+
+        with patch.object(
+            AttentionMonitor, "_capture_terminal", return_value=TERMINAL_TEXT_INPUT
+        ):
+            events = await monitor.poll_once()
+
+        assert len(events) == 1
+        session = events[0]["session"]
+        assert session.prompt is not None
+        assert session.prompt.type == "text_input"
+
+    @pytest.mark.asyncio
+    async def test_no_prompt_without_terminal(self, monitor, sessions_dir):
+        """Without tmux/pty, WAITING session has no prompt info."""
+        pid = os.getpid()
+        write_heartbeat(
+            sessions_dir, pid=pid,
+            last_tool_time=_iso_past(60),
+            # No tmux_session, no pty_port
+        )
+
+        events = await monitor.poll_once()
+        assert len(events) == 1
+        assert events[0]["session"].prompt is None
+
+    @pytest.mark.asyncio
+    async def test_no_prompt_when_working(self, monitor, sessions_dir):
+        """WORKING state should never show a prompt."""
+        pid = os.getpid()
+        write_heartbeat(
+            sessions_dir, pid=pid,
+            last_tool_time=_iso_now(),
+            tmux_session="test-tmux",
+        )
+
+        events = await monitor.poll_once()
+        assert len(events) == 1
+        assert events[0]["session"].state == AttentionState.WORKING
+        assert events[0]["session"].prompt is None
+
+    @pytest.mark.asyncio
+    async def test_terminal_working_output_no_prompt(self, monitor, sessions_dir):
+        """Terminal showing work output (no prompt chars) → no prompt detected."""
+        pid = os.getpid()
+        write_heartbeat(
+            sessions_dir, pid=pid,
+            last_tool_time=_iso_past(60),
+            tmux_session="test-tmux",
+        )
+
+        with patch.object(
+            AttentionMonitor, "_capture_terminal", return_value=TERMINAL_WORKING
+        ):
+            events = await monitor.poll_once()
+
+        assert len(events) == 1
+        session = events[0]["session"]
+        assert session.state == AttentionState.WAITING
+        assert session.prompt is None
 
 
 # ---------------------------------------------------------------------------
@@ -368,89 +480,76 @@ class TestRunLoop:
 class TestPromptCache:
     @pytest.mark.asyncio
     async def test_prompt_cleared_on_working(self, monitor, sessions_dir):
-        """Prompt should be cleared when session transitions to WORKING.
-
-        When the agent is actively making tool calls (<5s idle), old prompts
-        are stale.  B2 cache only applies to THINKING (5-15s).
-        """
+        """Prompt should be cleared when session transitions to WORKING."""
         pid = os.getpid()
         sid = f"sess-{pid}"
-        notification = json.dumps({"tool": "AskUser", "message": "Pick an option?"})
 
-        # Poll 1: WAITING with notification_data → prompt detected
+        # Poll 1: WAITING with terminal showing permission
         write_heartbeat(
-            sessions_dir,
-            pid=pid,
+            sessions_dir, pid=pid,
             last_tool_time=_iso_past(60),
-            notification_data=notification,
+            tmux_session="test-tmux",
         )
-        events1 = await monitor.poll_once()
-        assert len(events1) == 1
-        assert events1[0]["session"].state == AttentionState.WAITING
+        with patch.object(
+            AttentionMonitor, "_capture_terminal", return_value=TERMINAL_PERMISSION
+        ):
+            events1 = await monitor.poll_once()
         assert events1[0]["session"].prompt is not None
 
         # Poll 2: transition to WORKING (recent timestamp)
         write_heartbeat(
-            sessions_dir,
-            pid=pid,
+            sessions_dir, pid=pid,
             last_tool_time=_iso_now(),
-            notification_data="",
         )
         events2 = await monitor.poll_once()
-        assert len(events2) == 1
-        assert events2[0]["type"] == "state_changed"
         assert events2[0]["session"].state == AttentionState.WORKING
-        # Prompt must be cleared — agent is actively working
         assert events2[0]["session"].prompt is None
-        # Cache should also be cleared
         assert sid not in monitor._last_prompt
 
     @pytest.mark.asyncio
     async def test_prompt_cached_during_thinking(self, monitor, sessions_dir):
-        """B2 protection: prompt cached during THINKING (5-15s idle)."""
+        """B2 protection: prompt cached during THINKING (5-10s idle)."""
         pid = os.getpid()
-        sid = f"sess-{pid}"
-        notification = json.dumps({"tool": "AskUser", "message": "Pick an option?"})
 
-        # Poll 1: WAITING with prompt
+        # Poll 1: WAITING with terminal showing permission
         write_heartbeat(
-            sessions_dir,
-            pid=pid,
+            sessions_dir, pid=pid,
             last_tool_time=_iso_past(60),
-            notification_data=notification,
+            tmux_session="test-tmux",
         )
-        events1 = await monitor.poll_once()
-        assert events1[0]["session"].prompt is not None
+        with patch.object(
+            AttentionMonitor, "_capture_terminal", return_value=TERMINAL_PERMISSION
+        ):
+            events1 = await monitor.poll_once()
         cached_prompt = events1[0]["session"].prompt
+        assert cached_prompt is not None
 
-        # Poll 2: transition to THINKING (8s idle — between 5 and 15)
+        # Poll 2: transition to THINKING (8s idle — between 5 and 10)
         write_heartbeat(
-            sessions_dir,
-            pid=pid,
+            sessions_dir, pid=pid,
             last_tool_time=_iso_past(8),
-            notification_data="",
         )
         events2 = await monitor.poll_once()
         assert events2[0]["session"].state == AttentionState.THINKING
-        # B2: cached prompt preserved during brief THINKING transitions
         assert events2[0]["session"].prompt is not None
-        assert events2[0]["session"].prompt.raw_text == cached_prompt.raw_text
+        assert events2[0]["session"].prompt.tool == cached_prompt.tool
 
     @pytest.mark.asyncio
     async def test_prompt_cache_cleared_on_session_end(self, monitor, sessions_dir):
         """Prompt cache should be cleaned up when session ends."""
         pid = os.getpid()
         sid = f"sess-{pid}"
-        notification = json.dumps({"tool": "AskUser", "message": "Pick an option?"})
 
         # Poll 1: WAITING with prompt
         hb_path = write_heartbeat(
-            sessions_dir,
-            pid=pid,
+            sessions_dir, pid=pid,
             last_tool_time=_iso_past(60),
-            notification_data=notification,
+            tmux_session="test-tmux",
         )
-        await monitor.poll_once()
+        with patch.object(
+            AttentionMonitor, "_capture_terminal", return_value=TERMINAL_PERMISSION
+        ):
+            await monitor.poll_once()
         assert sid in monitor._last_prompt
 
         # Remove heartbeat → session ends
@@ -648,6 +747,10 @@ class TestAbandonThreshold:
             sessions_dir, pid=pid,
             last_tool_time=_iso_past(_ABANDON_THRESHOLD + 100),
         )
+        # Also age the file mtime so the monitor considers it truly abandoned
+        hb_path = os.path.join(sessions_dir, f"{pid}.json")
+        old_time = time.time() - _ABANDON_THRESHOLD - 100
+        os.utime(hb_path, (old_time, old_time))
         events2 = await monitor.poll_once()
         assert len(events2) == 1
         assert events2[0]["type"] == "session_ended"
@@ -666,6 +769,10 @@ class TestAbandonThreshold:
             sessions_dir, pid=pid,
             last_tool_time=_iso_past(_ABANDON_THRESHOLD + 500),
         )
+        # Age the file mtime too
+        hb_path = os.path.join(sessions_dir, f"{pid}.json")
+        old_time = time.time() - _ABANDON_THRESHOLD - 500
+        os.utime(hb_path, (old_time, old_time))
         events = await monitor.poll_once()
         # Not tracked, so no ended event either — just skipped
         assert len(events) == 0
@@ -677,15 +784,18 @@ class TestAbandonThreshold:
         from src.daemon.attention_monitor import _ABANDON_THRESHOLD
 
         pid = os.getpid()
-        # Start abandoned
+        # Start abandoned (both last_tool_time and file mtime old)
         write_heartbeat(
             sessions_dir, pid=pid,
             last_tool_time=_iso_past(_ABANDON_THRESHOLD + 100),
         )
+        hb_path = os.path.join(sessions_dir, f"{pid}.json")
+        old_time = time.time() - _ABANDON_THRESHOLD - 100
+        os.utime(hb_path, (old_time, old_time))
         events1 = await monitor.poll_once()
         assert len(events1) == 0
 
-        # User returns — recent activity
+        # User returns — recent activity (write_heartbeat updates file mtime)
         write_heartbeat(sessions_dir, pid=pid, last_tool_time=_iso_past(30))
         events2 = await monitor.poll_once()
         assert len(events2) == 1

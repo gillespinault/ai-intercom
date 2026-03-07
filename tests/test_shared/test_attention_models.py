@@ -1,6 +1,8 @@
 """Tests for Attention Hub models."""
 
 import pytest
+from pydantic import ValidationError
+
 from src.shared.models import (
     AttentionState,
     PromptType,
@@ -9,6 +11,10 @@ from src.shared.models import (
     AttentionHeartbeat,
     AttentionSession,
     AttentionEvent,
+    PermissionRequest,
+    PermissionDecision,
+    TTSCategory,
+    TTSAnnounce,
 )
 
 
@@ -229,3 +235,92 @@ def test_attention_event_timestamp_auto():
     event = AttentionEvent(type="ping")
     assert event.timestamp  # should be auto-generated ISO string
     assert "T" in event.timestamp  # basic ISO format check
+
+
+# --- PermissionRequest & PermissionDecision ---
+
+
+class TestPermissionModels:
+    def test_permission_request_from_hook_data(self):
+        req = PermissionRequest(
+            session_id="abc123",
+            tool_name="Bash",
+            tool_input={"command": "docker ps"},
+        )
+        assert req.session_id == "abc123"
+        assert req.tool_name == "Bash"
+        assert req.tool_input == {"command": "docker ps"}
+        assert req.request_id  # auto-generated
+
+    def test_permission_request_with_suggestions(self):
+        req = PermissionRequest(
+            session_id="abc123",
+            tool_name="Bash",
+            tool_input={"command": "ls"},
+            permission_suggestions=[{"type": "toolAlwaysAllow", "tool": "Bash"}],
+        )
+        assert len(req.permission_suggestions) == 1
+
+    def test_permission_decision_allow(self):
+        d = PermissionDecision(behavior="allow")
+        assert d.behavior == "allow"
+        assert d.to_hook_response() == {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": {"behavior": "allow"},
+            }
+        }
+
+    def test_permission_decision_deny_with_reason(self):
+        d = PermissionDecision(behavior="deny", reason="Not allowed")
+        resp = d.to_hook_response()
+        assert resp["hookSpecificOutput"]["decision"]["behavior"] == "deny"
+        assert resp["hookSpecificOutput"]["decision"]["reason"] == "Not allowed"
+
+    def test_permission_decision_fallback(self):
+        """Empty response = fallback to terminal dialog."""
+        d = PermissionDecision.fallback()
+        assert d.to_hook_response() == {}
+
+
+# --- TTSCategory & TTSAnnounce ---
+
+
+def test_tts_announce_model():
+    announce = TTSAnnounce(
+        session_id="s-abc123",
+        project="AI-intercom",
+        message="Build succeeded",
+        category=TTSCategory.MILESTONE,
+        priority="high",
+    )
+    assert announce.session_id == "s-abc123"
+    assert announce.project == "AI-intercom"
+    assert announce.message == "Build succeeded"
+    assert announce.category == TTSCategory.MILESTONE
+    assert announce.priority == "high"
+
+    data = announce.model_dump()
+    assert data["session_id"] == "s-abc123"
+    assert data["category"] == "milestone"
+    assert data["priority"] == "high"
+
+
+def test_tts_announce_default_category():
+    announce = TTSAnnounce(
+        session_id="s-xyz",
+        project="test-proj",
+        message="Something happened",
+    )
+    assert announce.category == TTSCategory.MILESTONE
+    assert announce.priority == "normal"
+
+
+def test_tts_announce_validation():
+    with pytest.raises(ValidationError):
+        TTSAnnounce(
+            session_id="s-bad",
+            project="test",
+            message="fail",
+            category="not_a_real_category",
+        )

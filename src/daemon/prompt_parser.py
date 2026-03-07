@@ -78,12 +78,15 @@ _MENU_OPTION_RE = re.compile(
 
 
 def _try_permission(text: str) -> DetectedPrompt | None:
-    perm_match = _PERMISSION_RE.search(text)
-    if perm_match is None:
+    # "Allow?" must appear in the bottom 15 lines to be a current prompt.
+    # Stale permission text in the scroll buffer must not match.
+    lines = text.splitlines()
+    bottom_text = "\n".join(lines[-15:]) if len(lines) > 15 else text
+    if not _ALLOW_RE.search(bottom_text):
         return None
 
-    # Must also have an "Allow?" line to confirm it's really a prompt.
-    if not _ALLOW_RE.search(text):
+    perm_match = _PERMISSION_RE.search(text)
+    if perm_match is None:
         return None
 
     # Determine tool name.
@@ -427,6 +430,7 @@ def _try_text_input(text: str) -> DetectedPrompt | None:
         r"^[\s─━═\-─]*$"          # separator lines (box-drawing chars)
         r"|^\s*esc\s+to\s+"       # "esc to interrupt" hint
         r"|^\s*Tip:\s+"           # "Tip: ..." suggestions
+        r"|^\s*\?\s+for\s+"       # "? for shortcuts" hint
         r"|^\s*\u23f5"            # ⏵ accept edits / fast-forward hints
         r"|^\s*\U0001f916"        # 🤖 ccusage statusline
         r"|^\s*\U0001f4b0"        # 💰 ccusage cost line
@@ -448,8 +452,9 @@ def _try_text_input(text: str) -> DetectedPrompt | None:
         return None
 
     # Accept both ">" (legacy) and "❯" (Claude Code 2.x) as prompt indicators.
-    # After normalisation, "❯\xa0" becomes "❯" after strip.
-    if prompt_line in (">", "\u276f", "\u276f\ufe0f"):
+    # The prompt line may contain hint text after the symbol, e.g.
+    # "❯ Press up to edit queued messages" when the user is typing.
+    if prompt_line in (">",) or prompt_line.startswith("\u276f"):
         return DetectedPrompt(
             type=PromptType.TEXT_INPUT,
             raw_text=text,
@@ -480,6 +485,10 @@ def parse_terminal_output(raw: str) -> DetectedPrompt | None:
     text = _strip_ansi(raw)
 
     # Try each detector in priority order.
+    # Note: the prompt TYPE is now determined by hook state in the
+    # attention monitor, not here.  This parser is used for enrichment
+    # (command_preview, choices, select menus).  The order below
+    # optimises for the most specific match.
     result = _try_permission(text)
     if result is None:
         result = _try_select_input(text)

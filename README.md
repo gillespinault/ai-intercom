@@ -21,7 +21,7 @@ A distributed inter-agent communication system that enables AI coding agents (Cl
  |  |  Approval     |       |             |       |                  |
  |  |  Engine       |       |             |  +----+----------+       |
  |  +------+--------+       |             |  |  MCP Server   |       |
- |  |  Registry     |       |             |  |  (12 tools)   |       |
+ |  |  Registry     |       |             |  |  (13 tools)   |       |
  |  |  (SQLite)     |       |             |  +----+----------+       |
  |  +------+--------+       |             |       |                  |
  |  |  Attention    |       |             |  +----+----------+       |
@@ -65,7 +65,7 @@ A distributed inter-agent communication system that enables AI coding agents (Cl
 - **HMAC-SHA256 authentication** -- Per-machine tokens with timestamp anti-replay protection
 - **Tailscale auto-discovery** -- Install script scans the Tailscale network to find the hub automatically
 - **Interactive agent-to-agent chat** -- Asynchronous bidirectional messaging between active Claude Code sessions across machines via inbox queues and PostToolUse hooks
-- **MCP integration** -- Twelve tools exposed via Model Context Protocol so any MCP-compatible agent can use the intercom
+- **MCP integration** -- Thirteen tools exposed via Model Context Protocol so any MCP-compatible agent can use the intercom
 - **Agent launcher** -- Start AI agents on remote machines with mission context and path restrictions
 - **Real-time mission feedback** -- Live streaming of agent activity (tools used, files read, commands run) via Telegram progress messages
 - **Policy engine** -- Glob/regex-based approval rules with runtime grants (mission-level, session-level)
@@ -75,10 +75,11 @@ A distributed inter-agent communication system that enables AI coding agents (Cl
 - **Self-upgrade** -- `ai-intercom self-upgrade` performs git pull, pip install, and daemon restart across the network
 - **Attention Hub** -- Full pipeline for detecting when AI agents need human attention:
   - Claude Code hooks (`cc-heartbeat.sh`) write session heartbeat files to `/tmp/cc-sessions/`
-  - Daemon `AttentionMonitor` reads heartbeats, detects state transitions (working/thinking/waiting), captures terminal output via tmux
+  - Daemon `AttentionMonitor` reads heartbeats, detects state transitions (working/thinking/waiting), captures terminal output via PTY (pyte) or tmux
   - State-change events are pushed to the Hub, which stores them and broadcasts via WebSocket
   - PWA dashboard at `/attention` shows real-time session status, terminal viewer, and prompt response UI
   - Telegram notifications alert when a session transitions to WAITING state
+- **TTS Narrator** -- Agents narrate their progress via `intercom_announce()`. The PWA synthesizes speech via XTTS and plays it automatically with per-category toggles, volume control, and verbosity settings
 - **Docker support** -- Separate Compose files for hub and daemon deployment
 
 ## Quick Start
@@ -153,6 +154,7 @@ Add to your agent's MCP configuration (e.g., `.mcp.json`):
 | `intercom_chat` | Send a message to an agent's active session. Creates a conversation thread. |
 | `intercom_reply` | Reply to a message in an existing conversation thread. |
 | `intercom_check_inbox` | Manually check for pending messages from other agents. |
+| `intercom_announce` | Push a TTS voice announcement to the Attention Hub PWA (milestone, difficulty, didactic). |
 | `intercom_upgrade` | Trigger network-wide daemon upgrades (`"all"`, `"outdated"`, or specific machine). |
 
 ## Configuration Reference
@@ -366,18 +368,19 @@ src/
     api.py              # FastAPI: health, status, message receive
     hub_client.py       # HTTP client for hub communication (incl. push_attention_event)
     agent_launcher.py   # Subprocess agent launcher with path validation and stream-json feedback
-    mcp_server.py       # FastMCP server exposing 12 intercom tools
+    mcp_server.py       # FastMCP server exposing 13 intercom tools
     upgrade.py          # Self-upgrade mechanism (detect, pull, install, restart)
     attention_monitor.py # Reads heartbeat files, detects state changes, pushes events to hub
-    prompt_parser.py    # Parses tmux terminal output to detect Claude Code prompts
+    prompt_parser.py    # Parses terminal output (PTY/tmux) to detect Claude Code prompts
   cli.py                # CLI entry point (hub/daemon/standalone/mcp-server)
   main.py               # Module entry point
 
 pwa/                    # Attention Hub Progressive Web App
   index.html            # Dashboard shell
-  app.js                # WebSocket client, session rendering
+  app.js                # WebSocket client, session rendering, TTS integration
   styles.css            # Dashboard styles
   terminal.js           # Terminal viewer component
+  tts.js                # TTS narrator module (queue, dedup, PCM playback)
   manifest.json         # PWA manifest
   sw.js                 # Service worker
 

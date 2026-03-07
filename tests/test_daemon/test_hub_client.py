@@ -102,3 +102,21 @@ async def test_push_result(httpx_mock):
         turn_count=5,
     )
     assert result["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_push_announce(httpx_mock):
+    """push_announce() should POST to /api/attention/announce."""
+    httpx_mock.add_response(
+        url="http://hub:7700/api/attention/announce",
+        json={"status": "ok"},
+    )
+    client = HubClient("http://hub:7700", "token", "serverlab")
+    result = await client.push_announce(
+        session_id="sess-1",
+        project="coach-me",
+        message="Phase 2 done",
+        category="milestone",
+        priority="normal",
+    )
+    assert result["status"] == "ok"

@@ -2,13 +2,13 @@
 
 AI-Intercom enables AI coding agents across machines to communicate with each other and with humans through Telegram, with an Attention Hub for real-time session monitoring.
 
-## Current: v0.6.0 (2026-03-04)
+## Current: v0.7.0 (2026-03-06)
 
 | Feature | Status |
 |---------|--------|
 | Hub + Daemon + MCP architecture | Done |
 | Telegram bot (forum topics, approval, dispatcher) | Done |
-| 12 MCP tools (send, ask, chat, reply, upgrade, etc.) | Done |
+| 13 MCP tools (send, ask, chat, reply, upgrade, announce, etc.) | Done |
 | Real-time mission feedback (stream-json) | Done |
 | Agent-to-agent chat with inbox hooks | Done |
 | Attention Hub PWA (`/attention`) | Done |
@@ -20,6 +20,8 @@ AI-Intercom enables AI coding agents across machines to communicate with each ot
 | PWA Industrial Ops Console redesign | Done (v0.5.0) |
 | Telegram notification filtering (per-prompt-type) | Done (v0.6.0) |
 | Dispatcher conversation memory (SQLite) | Done (v0.6.0) |
+| Terminal-only prompt detection (pyte) | Done (v0.7.0) |
+| TTS Narrator (`intercom_announce` + PWA playback) | Done (v0.7.0) |
 
 ## Next Steps
 

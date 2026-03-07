@@ -20,6 +20,7 @@ description: AI-Intercom quick reference and support channel. Use when you need 
 | `intercom_chat` | Send a message to an active agent session | `intercom_chat(to="limn/mnemos", message="Tu as l'URL du endpoint?")` |
 | `intercom_reply` | Reply in an existing conversation thread | `intercom_reply(thread_id="t-abc123", message="Oui, c'est /api/feedback")` |
 | `intercom_check_inbox` | Check for pending messages from agents | `intercom_check_inbox()` |
+| `intercom_announce` | Voice announcement in the PWA Attention Hub | `intercom_announce(message="Phase 2 terminee", category="milestone")` |
 
 ## Key Concepts
 

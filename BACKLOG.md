@@ -24,6 +24,14 @@ Implemente : Telegram voice messages → STT (Whisper sur limn) → texte → di
 ~~Actuellement chaque message Telegram est independant (pas de memoire de conversation).~~
 Implemente : SQLite-backed conversation memory. Derniers 10 messages (500 chars max) injectes dans le prompt dispatcher. Cleanup automatique >48h. API `GET /api/dispatcher/history` pour recherche dans l'historique.
 
+### ~~TTS Narrator (voice progress announcements)~~ → FAIT (v0.7.0)
+~~Permettre aux agents de narrer vocalement leur progression dans la PWA Attention Hub.~~
+Implémenté : `intercom_announce` MCP tool → Hub broadcast → PWA `tts.js` → XTTS sur Jetson Thor (24kHz PCM). Catégories : milestone, difficulty, didactic. Préférences par catégorie, volume, verbosité (minimal/informatif), cooldown. Hub proxy TTS avec rate limiting 2s.
+
+### ~~Terminal-only prompt detection + pyte~~ → FAIT (v0.7.0)
+~~`notification_data` du hook était unreliable pour détecter le type de prompt (auto-allowed permissions, race conditions).~~
+Refactorisé : terminal = seule source de vérité. `claude-pty` utilise pyte (émulateur VT100) au lieu de regex ANSI. Hooks ne trackent que le timing d'activité.
+
 ### Known Bugs (discovered v0.5.0 testing)
 
 #### ~~B1. Hub/daemon sync perdue au restart du hub~~ → FIXÉ (aafa345)
@@ -133,3 +141,5 @@ HMAC existe mais les tokens sont souvent vides.
 - [x] Voice via Telegram : STT (Whisper) + TTS (CosyVoice) sur limn, detection langue auto (v0.5.0)
 - [x] Telegram notification filtering : toggles per-prompt-type (permission/question/text_input) dans PWA, filtrage hub-side (v0.6.0)
 - [x] Dispatcher conversation memory : SQLite, 10 msg window, 500 chars/msg, TTL 48h, API history (v0.6.0)
+- [x] Terminal-only prompt detection : notification_data supprimé, terminal = source unique via pyte VT100 emulator (v0.7.0)
+- [x] TTS Narrator : `intercom_announce` MCP tool, Hub proxy XTTS, PWA tts.js playback avec préférences par catégorie (v0.7.0)
