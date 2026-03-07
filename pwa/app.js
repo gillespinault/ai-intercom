@@ -142,7 +142,12 @@
     'pref-autoscroll': true,
     'pref-idle': true,
     'pref-eink': false,
-    'pref-group-by': 'none'  // 'none' | 'project' | 'machine'
+    'pref-group-by': 'none',  // 'none' | 'project' | 'machine'
+    'pref-conversation-active': true,
+    'pref-show-agent-exchanges': true,
+    'pref-voice-response': true,
+    'pref-auto-print-pos': false,
+    'pref-hear-agents': false
   };
 
   var prefs = {};
@@ -606,6 +611,7 @@
         break;
 
       case 'session_end':
+      case 'session_ended':
         var endId = msg.session_id || (msg.session && msg.session.session_id);
         if (endId) {
           recordTimelineEvent(endId, 'ended');
@@ -648,6 +654,19 @@
         if (msg.request_id) {
           delete pendingPermissions[msg.request_id];
           renderDashboard();
+        }
+        break;
+
+      case 'dispatcher_prefs_updated':
+        if (msg.dispatcher_prefs) {
+          var dp = msg.dispatcher_prefs;
+          Object.keys(DISPATCHER_PREF_MAP).forEach(function (prefId) {
+            var apiKey = DISPATCHER_PREF_MAP[prefId];
+            if (apiKey in dp) {
+              savePref(prefId, dp[apiKey]);
+            }
+          });
+          syncPrefsToDOM();
         }
         break;
 
@@ -1320,6 +1339,53 @@
     bindTTSPref('pref-tts-cat-lifecycle', function (v) { window.AttentionTTS.updateSettings({ categories: { lifecycle: v } }); });
     bindTTSPref('pref-tts-cat-didactic', function (v) { window.AttentionTTS.updateSettings({ categories: { didactic: v } }); });
   }
+
+  // ---- Dispatcher Preferences Sync ----
+
+  var DISPATCHER_PREF_MAP = {
+    'pref-conversation-active': 'conversation_active',
+    'pref-show-agent-exchanges': 'show_agent_exchanges',
+    'pref-voice-response': 'voice_response',
+    'pref-auto-print-pos': 'auto_print_pos',
+    'pref-hear-agents': 'hear_agents'
+  };
+
+  function pushDispatcherPref(prefId) {
+    var apiKey = DISPATCHER_PREF_MAP[prefId];
+    if (!apiKey) return;
+    var body = {};
+    body[apiKey] = prefs[prefId];
+    fetch('/api/attention/dispatcher-prefs', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).catch(function () {});
+  }
+
+  // Bind dispatcher pref toggles
+  Object.keys(DISPATCHER_PREF_MAP).forEach(function (prefId) {
+    var el = document.getElementById(prefId);
+    if (el) {
+      el.addEventListener('change', function () {
+        savePref(prefId, el.checked);
+        pushDispatcherPref(prefId);
+      });
+    }
+  });
+
+  // Load dispatcher prefs from hub on startup
+  fetch('/api/attention/dispatcher-prefs')
+    .then(function (r) { return r.json(); })
+    .then(function (dp) {
+      Object.keys(DISPATCHER_PREF_MAP).forEach(function (prefId) {
+        var apiKey = DISPATCHER_PREF_MAP[prefId];
+        if (apiKey in dp) {
+          savePref(prefId, dp[apiKey]);
+        }
+      });
+      syncPrefsToDOM();
+    })
+    .catch(function () {});
 
   // ---- AudioContext Unlock for TTS ----
 
